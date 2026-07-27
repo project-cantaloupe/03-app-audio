@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "트랜스코딩 작업 메시지",
+  "description": "api 가 큐에 넣고 worker 가 읽는다. 이 파일이 두 서비스를 한 리포에 묶은 이유다.",
+  "type": "object",
+  "required": ["audio_id", "source_key", "targets"],
+  "properties": {
+    "audio_id": { "type": "string" },
+    "source_key": { "type": "string", "description": "S3 객체 키" },
+    "targets": {
+      "type": "array",
+      "items": { "enum": ["hls", "mp3-320k", "aac-128k", "waveform"] }
+    },
+    "loudness_target_lufs": { "type": "number", "default": -14 }
+  }
+}

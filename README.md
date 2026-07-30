@@ -27,6 +27,13 @@ shared/schema/     api 와 worker 가 주고받는 메시지 형식
 보호를 우회해야 하는데, 우회 권한은 경로를 가리지 않는다. 그러면 봇이
 `governance/` 도 고칠 수 있게 된다.
 
+Jenkins agent의 `onp-devops`는 Kubernetes `area` 라벨이 아니라 Jenkins가
+관리하는 실행기 라벨이다. 해당 실행기는 On-prem DevOps 환경에 둔다.
+
+현재 `services/*/src`는 서비스 구현을 넣기 위한 골격이다. 각 서비스의
+Dockerfile과 `02-k8s-manifests/apps/audio/{api,worker,web}` 이미지
+Kustomization이 함께 준비된 뒤 파이프라인을 활성화한다.
+
 ## 스키마를 고칠 때
 
 `shared/schema/` 를 바꾸면 api 와 worker 를 **같은 커밋에서** 맞춰야 한다.

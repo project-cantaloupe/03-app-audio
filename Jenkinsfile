@@ -1,7 +1,7 @@
 // 빌드 → 이미지 푸시 → k8s-manifests 에 PR 생성 → auto-merge
 // main 에 직접 푸시하지 않는다 (README 참고)
 pipeline {
-  agent { label 'area-onprem' }
+  agent { label 'onp-devops' }
 
   environment {
     REGISTRY  = credentials('registry-url')
@@ -25,7 +25,7 @@ pipeline {
     stage('open manifest PR') {
       steps {
         sh '''
-          git clone --depth 1 https://github.com/<org>/k8s-manifests.git /tmp/manifests
+          git clone --depth 1 https://github.com/project-cantaloupe/02-k8s-manifests.git /tmp/manifests
           cd /tmp/manifests
           git checkout -b bump-audio-${IMAGE_TAG}
           for svc in api worker web; do

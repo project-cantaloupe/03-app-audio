@@ -21,7 +21,7 @@
 - 브라우저가 MP3를 seek하며 재생하고, 미리 생성된 파형 위에 현재 위치를 표시한다.
 - DB 상태 변경과 Queue 메시지 발행 사이의 유실을 방지한다.
 - 중복 메시지와 Worker 재시작에도 같은 작업을 안전하게 재실행한다.
-- SQS 적체량에 따라 Pod를 확장하고, 검증 후 AWS Worker Node도 확장한다.
+- SQS 적체량과 Worker 처리량을 측정해 자동 확장 도입 여부를 판단한다.
 - 부하와 비용을 함께 측정할 수 있는 관측 지점을 둔다.
 
 ### MVP 비목표
@@ -47,8 +47,11 @@ HLS는 MP3 기준선의 재생 품질과 비용을 측정한 뒤 비교 실험�
 | 파형 | 사전 생성한 JSON | 재생 시 원본을 다시 분석하지 않고 브라우저에는 작은 peak 데이터만 전달한다. |
 | 인증 | Cognito | 비밀번호를 애플리케이션 DB에서 관리하지 않고 JWT subject를 소유자 식별자로 쓴다. |
 | 업로드 | 최대 100 MB 단일 Presigned PUT | Multipart 수명주기보다 MVP 단순성을 우선한다. |
-| 확장 | KEDA + AWS ASG | SQS 적체로 Pod를 늘리고 Pending Pod가 생길 때 Node를 추가한다. |
+| Worker 실행 | AWS Service Node의 정적 Deployment 1개 | 먼저 기능·장애 복구·자원 사용량을 검증한다. |
 | Kubernetes 범위 | `apps` Namespace + `audio-*` Workload | Namespace는 운영 영역, 이름과 라벨은 오디오 애플리케이션을 구분한다. |
+
+KEDA와 AWS Worker ASG는 확정한 MVP 구성요소가 아니다. 정적 Worker의 Queue
+대기시간, 유휴 비용과 처리량을 측정한 뒤 필요할 때만 별도 승인으로 도입한다.
 
 ## 4. 배치 원칙
 
@@ -81,7 +84,7 @@ spec:
 | `audio-web` | Deployment | 업로드·상태·재생 UI |
 | `audio-api` | Deployment | HTTP API, Cognito JWT 검증, Presigned URL과 재생 URL 발급 |
 | `audio-events` | Deployment | Scan 결과·Worker 결과 소비, Outbox 발행 |
-| `audio-transcode` | KEDA ScaledJob | 한 Job에서 SQS 메시지 한 건을 처리 |
+| `audio-transcode` | Deployment, replica 1 | SQS를 long polling하고 메시지를 한 건씩 처리 |
 
 Control Plane에는 사용자 Workload를 배치하지 않는다.
 
@@ -98,9 +101,7 @@ flowchart LR
         Web["audio-web"]
         API["audio-api"]
         Events["audio-events"]
-        KEDA["KEDA"]
-        Worker["audio-transcode Job"]
-        CA["Cluster Autoscaler"]
+        Worker["audio-transcode"]
     end
 
     subgraph Data["AWS Data Plane"]
@@ -114,8 +115,6 @@ flowchart LR
         ResultQueue["SQS transcode-result"]
         DLQ["SQS DLQs"]
     end
-
-    ASG["AWS Transcode Worker ASG"]
 
     Client --> Cognito
     Client --> ALB
@@ -132,8 +131,7 @@ flowchart LR
     Events --> RDS
     Events --> JobQueue
 
-    JobQueue --> KEDA
-    KEDA --> Worker
+    JobQueue --> Worker
     Worker --> Incoming
     Worker --> Artifacts
     Worker --> ResultQueue
@@ -141,10 +139,6 @@ flowchart LR
 
     JobQueue -. "failed messages" .-> DLQ
     ResultQueue -. "failed messages" .-> DLQ
-
-    KEDA -. "Pending Jobs" .-> CA
-    CA --> ASG
-    ASG --> Cluster
 
     API -. "Signed playback URL" .-> Client
     Client --> CloudFront
@@ -216,8 +210,7 @@ sequenceDiagram
     autonumber
     participant Outbox as "Outbox Publisher"
     participant Q as "transcode Queue"
-    participant KEDA as "KEDA"
-    participant Worker as "audio-transcode Job"
+    participant Worker as "audio-transcode"
     participant Source as "S3 quarantine"
     participant Artifact as "S3 artifacts"
     participant Result as "transcode-result Queue"
@@ -225,9 +218,7 @@ sequenceDiagram
     participant DB as "PostgreSQL"
 
     Outbox->>Q: "TranscodeRequested"
-    KEDA->>Q: "Queue depth 조회"
-    KEDA->>Worker: "메시지당 Job 생성"
-    Worker->>Q: "메시지 수신"
+    Worker->>Q: "long polling으로 메시지 수신"
     Worker->>Source: "CLEAN tag가 있는 원본 다운로드"
     Worker->>Worker: "FFprobe 제한 검증"
     Worker->>Worker: "FFmpeg MP3 변환"
@@ -515,8 +506,9 @@ cntlp-aws-transcode/
 | `audio-api` | Presigned PUT, CloudFront 서명키 조회, 필요한 Secret 조회 |
 | `audio-events` | 세 Queue consume/publish, 필요한 Secret 조회 |
 | `audio-transcode` | CLEAN 원본 읽기, artifact 쓰기, 작업·결과 Queue 접근 |
-| `keda-operator` | SQS queue attribute 조회 |
-| `cluster-autoscaler` | 대상 ASG 조회·용량 변경·인스턴스 종료 |
+
+자동 확장을 선택할 때만 `keda-operator`의 Queue 조회 권한과
+`cluster-autoscaler`의 ASG 조회·용량 변경·인스턴스 종료 권한을 추가한다.
 
 OIDC federation 도입 전 임시로 EC2 instance profile을 사용한다면 Workload를
 전용 AWS Node에 고정하고 역할을 최소화한다. 정적 IAM user key는 대안으로
@@ -539,33 +531,38 @@ GuardDuty가 악성코드를 찾지 못했다는 결과가 미디어 decoder 취
 - CPU·메모리·ephemeral storage 제한
 - 입력·출력 경로 외 hostPath와 host network 사용 금지
 
-## 16. 자동 확장
+## 16. Worker 실행과 확장 판단
 
-선택한 최종 목표는 Pod와 Node를 모두 확장하는 것이다. 안전한 검증을 위해 세
-단계로 나눈다.
+MVP 기준은 정적 Worker다. 자동 확장은 필수 구성요소가 아니라 부하와 비용 측정
+후 비교할 선택 후보이다.
 
-### 단계 1: 정적 Worker에서 기능 검증
+### MVP 기준: 정적 Worker
 
 - 기존 AWS Worker를 사용한다.
+- `audio-transcode`는 replica 1인 Deployment로 실행한다.
+- SQS long polling으로 메시지를 가져오고 성공한 메시지만 삭제한다.
 - `audio-transcode` 동시 처리 수는 1이다.
 - 파일 최대 크기는 100 MB다.
 - CPU·메모리 request와 limit, 임시 디스크 limit을 측정한다.
 
-### 단계 2: KEDA ScaledJob
+### 선택 후보 1: KEDA
 
-- SQS `transcode` 적체량으로 Job 수를 결정한다.
-- Job 하나가 메시지 하나를 처리하고 종료한다.
-- `minReplicaCount=0`으로 유휴 Pod 비용을 줄인다.
-- `maxReplicaCount`는 예산과 Node 상한을 함께 고려해 제한한다.
-- Queue visible 메시지와 in-flight 메시지를 구분해 과도한 확장을 막는다.
+다음 조건이 확인될 때 KEDA ScaledObject 또는 ScaledJob을 비교한다.
 
-### 단계 3: AWS Worker ASG
+- 정적 Worker에서 SQS oldest message age가 목표 시간을 반복해 초과한다.
+- 수동 replica 조정으로는 부하 실험을 재현하기 어렵다.
+- Queue visible·in-flight 메시지를 구분한 확장 기준을 정의할 수 있다.
+- `maxReplicaCount`와 최대 동시 처리 비용을 승인받았다.
 
-- Transcode 전용 Launch Template과 ASG를 만든다.
-- Cluster Autoscaler가 Pending `audio-transcode` Pod를 보고 ASG desired
-  capacity를 변경한다.
-- 초기 비용 상한은 ASG `min=0`, `max=3`으로 둔다.
-- scale-from-zero가 가능하도록 ASG에 다음 Node template label을 선언한다.
+유휴 Pod를 0으로 줄이는 장점만으로 KEDA를 도입하지 않는다. 장시간 실행하는
+Deployment와 메시지당 Job 중 처리량·시작 지연·실패 복구가 나은 방식을 측정한다.
+
+### 선택 후보 2: AWS Worker ASG
+
+KEDA 검증 후에도 Node 용량이 병목이고 유휴 Node 비용을 줄여야 할 때만 ASG와
+Cluster Autoscaler를 검토한다. 선택한다면 초기 상한은 `min=0`, `max=1`이며,
+예산 승인 전에는 확대하지 않는다. scale-from-zero에는 다음 Node template
+label이 필요하다.
 
 ```text
 k8s.io/cluster-autoscaler/enabled
@@ -576,7 +573,7 @@ k8s.io/cluster-autoscaler/node-template/label/role=service
 
 실제 Node bootstrap도 같은 `platform=aws`, `role=service` 라벨을 적용해야 한다.
 
-### Node bootstrap 전제
+### ASG 선택 전 Node bootstrap 전제
 
 ASG를 활성화하기 전에 다음 자동화가 검증되어야 한다.
 
@@ -589,7 +586,8 @@ ASG를 활성화하기 전에 다음 자동화가 검증되어야 한다.
 7. 종료 시 Pod drain, Kubernetes Node와 Tailscale device 정리
 
 이 절차가 없으면 ASG는 EC2만 늘리고 Kubernetes Worker를 만들지 못한다.
-따라서 단계 3은 별도 인프라 승인과 장애 복구 시험 후 활성화한다.
+따라서 ASG는 별도 인프라 승인과 장애 복구 시험 후에만 활성화한다. 조건을
+충족하지 않으면 정적 Worker 구성을 유지한다.
 
 ## 17. 실패 처리
 
@@ -605,8 +603,8 @@ ASG를 활성화하기 전에 다음 자동화가 검증되어야 한다.
 | 일시적 S3·SQS 오류 | 지수 backoff 후 제한 재시도 | 처리 중 |
 | 결과 메시지 유실 | Worker가 작업 메시지를 삭제하지 않아 재실행 | 처리 중 |
 | DLQ 적체 | 경보 후 원인 확인·수동 redrive | 실패 상태 |
-| Node 부족 | KEDA Job Pending, Cluster Autoscaler 확장 | `QUEUED` |
-| 예산 상한 도달 | KEDA pause 또는 maxReplica 축소 | `QUEUED` |
+| 정적 Worker 용량 부족 | Queue 경보 후 replica·Node를 수동 조정 | `QUEUED` |
+| 자동 확장 실험 실패 | 확장을 중지하고 정적 Worker로 복귀 | `QUEUED` |
 
 FFmpeg와 FFprobe에는 실행 시간, CPU, 메모리, 임시 디스크, 출력 크기 제한을 둔다.
 사용자가 올린 파일 이름을 shell command에 직접 보간하지 않고 argv로 전달한다.
@@ -621,8 +619,8 @@ FFmpeg와 FFprobe에는 실행 시간, CPU, 메모리, 임시 디스크, 출력 
 - SQS visible·in-flight·oldest message age
 - transcode queue time·processing time·success·failure
 - Worker CPU·메모리·임시 디스크
-- KEDA desired Job 수와 실제 Job 수
-- ASG Node 수와 scale event
+- 자동 확장 실험 시 KEDA desired 수와 실제 Pod·Job 수
+- ASG 실험 시 Node 수와 scale event
 - MP3 byte 전송량과 CloudFront cache hit ratio
 - S3 저장량·GET·PUT 요청 수
 - 오디오 1건당 처리 시간과 추정 비용
@@ -644,9 +642,9 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 - 원본은 재처리 정책에 필요한 기간만 보존하고 Lifecycle로 전환·삭제한다.
 - artifact는 MP3 한 rendition과 waveform 하나로 시작한다.
 - HLS segment와 320 kbps 추가 rendition은 측정 근거 없이 생성하지 않는다.
-- KEDA와 ASG의 최대 동시 처리 수를 함께 제한한다.
-- Worker scale-from-zero를 사용하되 Node bootstrap 실패가 반복되면 자동 확장을
-  정지한다.
+- 자동 확장을 선택하면 KEDA와 ASG의 최대 동시 처리 수를 함께 제한한다.
+- scale-from-zero 실험에서 Node bootstrap 실패가 반복되면 자동 확장을 정지하고
+  정적 Worker로 복귀한다.
 - DLQ 메시지는 비용과 장애 신호이므로 오래 방치하지 않는다.
 - CloudFront와 S3 request·transfer 비용을 MP3 기준선으로 기록한다.
 
@@ -659,17 +657,17 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 
 ### `01-infra-provisioning`
 
-- S3, SQS, DLQ, EventBridge, GuardDuty, Cognito, CloudFront, IAM, ASG
-- Packer·Ansible Worker image와 bootstrap
+- S3, SQS, DLQ, EventBridge, GuardDuty, Cognito, CloudFront, IAM
+- 자동 확장 선택 시 ASG와 Packer·Ansible Worker image·bootstrap
 - Terraform 비용 상한과 destroy 경계
 
 ### `02-k8s-manifests`
 
-- `apps` Namespace의 Deployment·Service·KEDA ScaledJob
+- `apps` Namespace의 Deployment·Service
 - AWS Node selector
 - resource request·limit
 - NetworkPolicy, PodDisruptionBudget, Secret 참조
-- Cluster Autoscaler와 KEDA 배포 설정
+- 자동 확장 선택 시 KEDA와 Cluster Autoscaler 설정
 
 매니페스트는 GitOps 저장소를 통해 배포하고 수동 `kubectl apply`를 기준 절차로
 사용하지 않는다.
@@ -712,23 +710,23 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 1. `audio-web`, `audio-api`, `audio-events` 배포
 2. AWS Node selector와 resource limit 적용
 3. NetworkPolicy와 Secret 연동
-4. KEDA ScaledJob 적용
+4. replica 1인 `audio-transcode` Deployment 적용
 5. 실제 SQS·S3·RDS 통합 검증
 
-### Phase 4: Node 자동 확장
+### Phase 4: 자동 확장 채택 판단
 
-1. Packer Worker AMI와 bootstrap 검증
-2. ASG를 `min=0`, `max=1`로 시작
-3. scale-from-zero와 Node Ready 검증
-4. 처리 중 scale-down·재시도 검증
-5. 예산 승인 후 `max=3`까지 확대
+1. 정적 Worker의 Queue 대기시간·처리량·유휴 비용 측정
+2. 필요하면 KEDA ScaledObject와 ScaledJob 비교 실험
+3. Node 용량이 병목일 때만 Packer Worker AMI와 bootstrap 검증
+4. ASG를 선택하면 `min=0`, `max=1`로 scale-from-zero 시험
+5. 채택 근거와 비용 상한을 별도 결정으로 기록
 
 ### Phase 5: 부하·FinOps 실험
 
 1. MP3 기준선 측정
-2. Queue 적체와 KEDA 확장 시험
+2. Queue 적체와 정적 Worker 처리량 시험
 3. Worker 장애·DLQ·복구 시험
-4. On-Demand와 Spot 비교
+4. 자동 확장을 선택한 경우 KEDA·ASG 비용과 복구 시험
 5. 필요할 때만 HLS 비교 구현
 
 ## 22. 완료 기준
@@ -740,10 +738,12 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 - Worker가 중간에 종료되어도 메시지가 다시 처리된다.
 - MP3 Range GET seek와 waveform click seek가 동작한다.
 - API와 Worker는 GCP·On-Prem Node에 배치되지 않는다.
-- Queue가 비면 Transcode Job은 0개가 된다.
-- ASG 활성화 후 Pending Job이 AWS Worker Node를 만들고 완료 후 축소된다.
+- Queue가 비면 정적 Worker가 추가 작업 없이 long polling 상태를 유지한다.
 - 파일 1건 기준 처리 시간·오류·AWS 사용량을 관측할 수 있다.
 - 모든 Secret과 장기 credential이 Git·이미지·Queue·로그에 없다.
+
+KEDA나 ASG를 채택하면 scale-out, scale-in, bootstrap 실패와 비용 상한을 별도 완료
+기준으로 추가한다. 자동 확장을 선택하지 않아도 위 MVP 완료 기준은 충족할 수 있다.
 
 ## 23. 선택하지 않은 대안
 

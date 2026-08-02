@@ -20,7 +20,7 @@ shared/schema/     api 와 worker 가 주고받는 메시지 형식
 ## 아키텍처
 
 오디오 업로드, GuardDuty 검사, SQS, FFmpeg 변환, MP3 재생, waveform,
-KEDA·AWS Worker 자동 확장 구조와 선택 근거는
+정적 Worker 기준과 자동 확장 도입 판단 기준은
 [`docs/audio-service-architecture.md`](docs/audio-service-architecture.md)에
 정리한다.
 

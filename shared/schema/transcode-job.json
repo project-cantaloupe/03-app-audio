@@ -1,16 +1,89 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "트랜스코딩 작업 메시지",
-  "description": "api 가 큐에 넣고 worker 가 읽는다. 이 파일이 두 서비스를 한 리포에 묶은 이유다.",
+  "description": "API가 SQS에 발행하고 Worker가 처리하는 MP3 및 waveform 생성 계약",
   "type": "object",
-  "required": ["audio_id", "source_key", "targets"],
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "job_id",
+    "audio_id",
+    "source",
+    "targets"
+  ],
   "properties": {
-    "audio_id": { "type": "string" },
-    "source_key": { "type": "string", "description": "S3 객체 키" },
-    "targets": {
-      "type": "array",
-      "items": { "enum": ["hls", "mp3-320k", "aac-128k", "waveform"] }
+    "schema_version": {
+      "type": "integer",
+      "const": 1
     },
-    "loudness_target_lufs": { "type": "number", "default": -14 }
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "job_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "audio_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bucket",
+        "key",
+        "version_id",
+        "checksum_sha256"
+      ],
+      "properties": {
+        "bucket": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 63
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checksum_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{43}=$",
+          "description": "S3 x-amz-checksum-sha256의 Base64 인코딩 값"
+        }
+      }
+    },
+    "targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mp3_bitrate_kbps",
+        "waveform_points_per_second"
+      ],
+      "properties": {
+        "mp3_bitrate_kbps": {
+          "type": "integer",
+          "enum": [
+            128,
+            192,
+            256,
+            320
+          ],
+          "default": 192
+        },
+        "waveform_points_per_second": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      }
+    }
   }
 }

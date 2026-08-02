@@ -3,7 +3,7 @@
 오디오 서비스 소스. 세 서비스를 한 리포에 둔다.
 
 ```
-services/api/      업로드 접수, 스트리밍 API
+services/api/      업로드·메타데이터·재생 URL API
 services/worker/   ffmpeg 트랜스코딩
 services/web/      프론트엔드
 shared/schema/     api 와 worker 가 주고받는 메시지 형식
@@ -16,6 +16,13 @@ shared/schema/     api 와 worker 가 주고받는 메시지 형식
 못 읽는다.
 
 이미지는 서비스마다 따로 빌드하므로 배포는 여전히 독립적이다.
+
+## 아키텍처
+
+오디오 업로드, GuardDuty 검사, SQS, FFmpeg 변환, MP3 재생, waveform,
+KEDA·AWS Worker 자동 확장 구조와 선택 근거는
+[`docs/audio-service-architecture.md`](docs/audio-service-architecture.md)에
+정리한다.
 
 ## 빌드하면 무슨 일이 일어나나
 

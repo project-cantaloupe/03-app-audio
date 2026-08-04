@@ -98,7 +98,7 @@ spec:
 | `audio-events` | Deployment | Scan 결과·Worker 결과 소비, Outbox 발행 |
 | `audio-transcode` | Deployment, replica 1 | SQS를 long polling하고 메시지를 한 건씩 처리 |
 
-`istio-ingressgateway`는 `istio-system` Namespace의 별도 Deployment와 NodePort
+`istio-ingress`는 전용 `istio-ingress` Namespace의 별도 Deployment와 NodePort
 Service로 운영한다. Control Plane에는 Gateway와 사용자 Workload를 배치하지 않는다.
 
 ## 5. 전체 구조
@@ -175,7 +175,7 @@ TLS를 종료하지 않고 Istio Ingress Gateway의 고정 NodePort로 전달한
 Public DNS
   -> Internet-facing NLB TCP:443
   -> AWS Service Node TCP:30443
-  -> istio-ingressgateway HTTPS
+  -> istio-ingress HTTPS
   -> audio-web 또는 audio-api
 ```
 
@@ -221,7 +221,7 @@ AWS Worker를 재생성하면 instance ID가 바뀌므로 NLB Target 등록도 T
 
 공개 DNS 이름은 변경 가능한 배포 값으로 관리하고 문서에 실제 도메인을
 하드코딩하지 않는다. cert-manager는 DNS-01 방식으로 인증서를 발급하고
-`istio-system`의 TLS Secret을 갱신한다. DNS provider가 Route 53이면 cert-manager
+`istio-ingress`의 TLS Secret을 갱신한다. DNS provider가 Route 53이면 cert-manager
 ServiceAccount에는 지정 Hosted Zone의 DNS 검증 레코드에 필요한 최소 IAM 권한만
 부여한다.
 
@@ -806,9 +806,9 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 
 ### `01-infra-provisioning`
 
-- `terraform/aws/network`: NLB Security Group과 Worker NodePort ingress
-- `terraform/aws/edge`: Internet-facing NLB, Listener, Target Group, Target 등록과
-  Public DNS alias
+- `terraform/aws/network`: VPC와 Worker Security Group 자체
+- `terraform/aws/edge`: Internet-facing NLB, NLB Security Group, Worker NodePort
+  ingress rule, Listener, Target Group, Target 등록과 Public DNS alias
 - `terraform/aws/edge`: cert-manager DNS-01용 최소 IAM과 관련 출력
 - Edge는 Network·Compute remote state를 읽고 Worker instance ID 변경을 Target
   attachment에 반영
@@ -818,7 +818,7 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 
 ### `02-k8s-manifests`
 
-- Istio Helm chart 버전 고정, control plane과 `istio-ingressgateway` NodePort Service
+- Istio Helm chart 버전 고정, control plane과 `istio-ingress` NodePort Service
 - Istio 업그레이드 전 diff·분석과 이전 버전 rollback 절차
 - cert-manager Certificate·Issuer 참조와 TLS Secret 연결
 - Gateway, VirtualService, DestinationRule
@@ -884,9 +884,11 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 1. NLB → Gateway → Web·API 경로와 Source IP 확인
 2. 외부 `/metrics`·`/healthz` 차단과 내부 probe 확인
 3. Gateway → Web·API mTLS와 비인가 Workload 차단 확인
-4. `audio-api` stable 90%·canary 10% 트래픽 분배 시험
-5. Canary 지연·오류 주입 후 stable 100% 롤백
-6. Istio 적용 전후 latency·CPU·메모리·OpenCost 비교
+4. 단일 Backend HTTP routing과 Source IP 전달 확인
+5. Istio 적용 전후 latency·CPU·메모리·OpenCost 비교
+
+Canary 트래픽 분배와 오류 주입은 애플리케이션 버전 전환 시험이 필요할 때 후속
+검증으로 수행한다.
 
 ### Phase 5: 자동 확장 채택 판단
 
@@ -917,7 +919,7 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 - NLB Target health가 Gateway readiness와 일치하고 NodePort 직접 접근은 차단된다.
 - Gateway에서 `audio-web`과 `audio-api`까지 STRICT mTLS가 적용된다.
 - 비인가 ServiceAccount는 Mesh 대상 Workload에 접근하지 못한다.
-- stable 90%·canary 10% 분배와 stable 100% 롤백을 재현할 수 있다.
+- Gateway가 단일 Backend로 요청을 전달하고 mTLS·인가 정책을 적용한다.
 - API와 Worker는 GCP·On-Prem Node에 배치되지 않는다.
 - Queue가 비면 정적 Worker가 추가 작업 없이 long polling 상태를 유지한다.
 - 파일 1건 기준 처리 시간·오류·AWS 사용량을 관측할 수 있다.

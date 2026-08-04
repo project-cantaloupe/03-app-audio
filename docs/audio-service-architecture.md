@@ -3,6 +3,9 @@
 ## 1. 문서 상태
 
 - 상태: MVP 구현 기준
+- 변경일: 2026-08-04
+- 외부 진입 결정: ALB 직접 라우팅 대신 NLB + Istio Ingress Gateway
+- 구현 상태: 설계 반영, Terraform·Kubernetes 런타임 미적용
 - 대상: Cantaloupe 오디오 업로드·검사·변환·재생 서비스
 - 애플리케이션 저장소: `03-app-audio`
 - Kubernetes 매니페스트 저장소: `02-k8s-manifests`
@@ -23,6 +26,8 @@
 - 중복 메시지와 Worker 재시작에도 같은 작업을 안전하게 재실행한다.
 - SQS 적체량과 Worker 처리량을 측정해 자동 확장 도입 여부를 판단한다.
 - 부하와 비용을 함께 측정할 수 있는 관측 지점을 둔다.
+- Internet-facing NLB와 Istio Ingress Gateway로 공개 HTTPS 진입점을 구성한다.
+- Gateway에서 API Canary, mTLS, 접근 정책과 HTTP 관측을 검증한다.
 
 ### MVP 비목표
 
@@ -31,6 +36,8 @@
 - 댓글, 좋아요, 팔로우, 추천 피드
 - DRM과 광고 삽입
 - GCP·On-Prem Node에서 사용자 오디오 처리
+- GCP·On-Prem Workload까지 확장하는 멀티클러스터 Service Mesh
+- S3·SQS·RDS 같은 AWS 관리형 서비스의 Istio Mesh 편입
 
 HLS는 MP3 기준선의 재생 품질과 비용을 측정한 뒤 비교 실험으로 추가한다.
 
@@ -46,6 +53,9 @@ HLS는 MP3 기준선의 재생 품질과 비용을 측정한 뒤 비교 실험�
 | 재생 | Progressive MP3 | VOD 오디오에 HLS playlist·segment 복잡도를 추가하지 않고 Range GET으로 seek한다. |
 | 파형 | 사전 생성한 JSON | 재생 시 원본을 다시 분석하지 않고 브라우저에는 작은 peak 데이터만 전달한다. |
 | 인증 | Cognito | 비밀번호를 애플리케이션 DB에서 관리하지 않고 JWT subject를 소유자 식별자로 쓴다. |
+| 외부 진입 | Internet-facing NLB + Istio Ingress Gateway | NLB는 L4 연결만 전달하고 TLS와 HTTP 라우팅은 Istio가 소유한다. |
+| TLS | Istio Gateway 종료 + cert-manager DNS-01 | 공개 인증서를 자동 갱신하고 private key를 Git 밖의 Kubernetes Secret으로 관리한다. |
+| Service Mesh 범위 | `audio-web`, `audio-api` | 실제 HTTP 진입 경로에만 Sidecar를 적용하고 비동기 Worker 비용과 장애 범위를 분리한다. |
 | 업로드 | 최대 100 MB 단일 Presigned PUT | Multipart 수명주기보다 MVP 단순성을 우선한다. |
 | Worker 실행 | AWS Service Node의 정적 Deployment 1개 | 먼저 기능·장애 복구·자원 사용량을 검증한다. |
 | Kubernetes 범위 | `apps` Namespace + `audio-*` Workload | Namespace는 운영 영역, 이름과 라벨은 오디오 애플리케이션을 구분한다. |
@@ -60,6 +70,8 @@ KEDA와 AWS Worker ASG는 확정한 MVP 구성요소가 아니다. 정적 Worker
 - GCP·On-Prem Node는 FinOps·DevOps·관측 용도이며 오디오 요청을 처리하지 않는다.
 - 애플리케이션 Workload 이름에는 `cntlp`나 `aws`를 넣지 않는다.
 - 실행 위치는 Node selector로 결정한다.
+- Istio Ingress Gateway와 Mesh 대상 Workload는 AWS Service Node에만 배치한다.
+- `audio-events`와 `audio-transcode`에는 Sidecar를 주입하지 않는다.
 
 사용자 서비스는 `apps` Namespace에 배포한다.
 `02-k8s-manifests/apps/audio/`는 Git 저장소의 영역·애플리케이션 디렉터리이며,
@@ -86,7 +98,8 @@ spec:
 | `audio-events` | Deployment | Scan 결과·Worker 결과 소비, Outbox 발행 |
 | `audio-transcode` | Deployment, replica 1 | SQS를 long polling하고 메시지를 한 건씩 처리 |
 
-Control Plane에는 사용자 Workload를 배치하지 않는다.
+`istio-ingressgateway`는 `istio-system` Namespace의 별도 Deployment와 NodePort
+Service로 운영한다. Control Plane에는 Gateway와 사용자 Workload를 배치하지 않는다.
 
 ## 5. 전체 구조
 
@@ -94,10 +107,12 @@ Control Plane에는 사용자 Workload를 배치하지 않는다.
 flowchart LR
     Client["Web Client"]
     Cognito["Amazon Cognito"]
-    ALB["AWS ALB"]
+    DNS["Public DNS"]
+    NLB["AWS NLB<br/>TCP 80/443"]
     CloudFront["CloudFront"]
 
     subgraph Cluster["cntlp-k8s"]
+        Ingress["Istio Ingress Gateway"]
         Web["audio-web"]
         API["audio-api"]
         Events["audio-events"]
@@ -117,9 +132,11 @@ flowchart LR
     end
 
     Client --> Cognito
-    Client --> ALB
-    ALB --> Web
-    ALB --> API
+    Client --> DNS
+    DNS --> NLB
+    NLB --> Ingress
+    Ingress --> Web
+    Ingress --> API
     API --> RDS
     API -. "Presigned PUT" .-> Client
     Client --> Incoming
@@ -147,6 +164,118 @@ flowchart LR
 
 CloudFront는 S3 Origin Access Control로 artifact bucket만 읽는다. S3의 직접
 Public Access는 차단한다.
+
+### 외부 진입과 TLS 경계
+
+NLB는 HTTP 내용을 해석하지 않는 L4 진입점으로만 사용한다. `443/TCP` 연결은
+TLS를 종료하지 않고 Istio Ingress Gateway의 고정 NodePort로 전달한다. 공개
+인증서 종료, SNI와 HTTP 경로 라우팅은 Gateway가 담당한다.
+
+```text
+Public DNS
+  -> Internet-facing NLB TCP:443
+  -> AWS Service Node TCP:30443
+  -> istio-ingressgateway HTTPS
+  -> audio-web 또는 audio-api
+```
+
+HTTP는 별도 NLB listener를 통해 Gateway로 전달한 뒤 Istio에서 HTTPS로
+리다이렉트한다.
+
+```text
+NLB TCP:80  -> NodePort 30080 -> Istio HTTPS redirect
+NLB TCP:443 -> NodePort 30443 -> Istio TLS termination
+NLB health  -> NodePort 32021 -> /healthz/ready
+```
+
+NodePort 값은 Terraform Target Group과 Kubernetes Service 사이의 계약이므로
+변경 시 `01-infra-provisioning`과 `02-k8s-manifests`를 같은 변경 단위로 검토한다.
+NLB는 AWS Worker EC2 instance ID를 target으로 등록한다. Gateway Service는
+`externalTrafficPolicy: Local`을 사용하고, NLB Target Group에는 Gateway Pod가
+실제로 배치된 AWS Service Node만 등록한다.
+
+MVP는 AWS Service Node가 있는 가용 영역 하나만 NLB에 활성화한다. instance
+target의 client IP preservation과 `externalTrafficPolicy: Local`을 함께 사용해
+Gateway access log에서 원본 client IP를 확인한다. 두 번째 AWS Service Node를
+추가할 때만 두 번째 Public Subnet·NLB 가용 영역·Gateway replica를 함께 추가한다.
+
+NLB Security Group은 인터넷의 `80/443`만 허용한다. AWS Worker Security Group은
+NLB Security Group에서 들어오는 `30080`, `30443`, `32021`만 허용하고 NodePort의
+직접 인터넷 접근을 금지한다. Control Plane과 GCP·On-Prem Node는 Target Group에
+등록하지 않는다.
+
+NLB health check는 Gateway 준비 상태를 감지하기 위한 신호이며 접근 제어 수단이
+아니다. 모든 Target이 동시에 비정상이면 NLB가 fail-open으로 Target에 연결을
+시도할 수 있으므로 Gateway의 readiness, 외부 synthetic check와 경보를 함께 둔다.
+
+MVP의 AWS Service Node가 하나이므로 NLB를 사용해도 애플리케이션이 고가용성이
+되는 것은 아니다. 단일 Target 또는 Gateway가 실패하면 서비스가 중단된다. 두
+AZ 고가용성은 AWS Service Node와 Gateway replica를 AZ별로 확보한 뒤 별도
+승인으로 확장한다.
+
+AWS Worker를 재생성하면 instance ID가 바뀌므로 NLB Target 등록도 Terraform으로
+갱신해야 한다. 적용 순서는 Network → Compute → Edge, 삭제 순서는 Edge → Compute
+→ Network로 유지하고 Target을 콘솔에서 수동 등록하지 않는다.
+
+### 공개 인증서
+
+공개 DNS 이름은 변경 가능한 배포 값으로 관리하고 문서에 실제 도메인을
+하드코딩하지 않는다. cert-manager는 DNS-01 방식으로 인증서를 발급하고
+`istio-system`의 TLS Secret을 갱신한다. DNS provider가 Route 53이면 cert-manager
+ServiceAccount에는 지정 Hosted Zone의 DNS 검증 레코드에 필요한 최소 IAM 권한만
+부여한다.
+
+인증서 private key와 발급 계정 credential은 Git, Terraform 변수, Queue와 로그에
+넣지 않는다. 인증서가 준비되지 않으면 NLB Target이 정상이어도 공개 HTTPS 완료로
+판정하지 않는다.
+
+### Istio 라우팅
+
+MVP는 `networking.istio.io/v1`의 Gateway, VirtualService와 DestinationRule을 한
+세트로 사용한다. 같은 host의 기본 route에 Kubernetes Gateway API를 혼합하지
+않는다. 기본 경로는 다음과 같다.
+
+| 요청 | 대상 | 비고 |
+| --- | --- | --- |
+| `/v1/*` | `audio-api` | Cognito JWT 검증은 API가 계속 수행 |
+| `/` | `audio-web` | 정적 UI와 클라이언트 라우팅 |
+| `/metrics` | 외부 라우팅 없음 | Prometheus의 클러스터 내부 scrape만 허용 |
+| `/healthz`, `/readyz` | 외부 라우팅 없음 | Kubernetes probe와 내부 검증에만 사용 |
+
+Gateway `AuthorizationPolicy`에서 `/metrics`, `/healthz`, `/readyz` 외부 요청을
+먼저 거부한 뒤 `/v1/*`, `/` 순서로 route를 평가한다. `/`의 Web fallback이 운영
+endpoint를 받아버리지 않게 거부 규칙을 별도로 검증한다.
+
+FFmpeg 작업은 HTTP로 변환하지 않고 SQS를 유지한다. Istio 재시도는 멱등한 GET에만
+제한적으로 검토하고 업로드 생성·완료 POST에는 자동 재시도를 적용하지 않는다.
+
+### Mesh 보안 범위
+
+`audio-web`과 `audio-api`에만 Sidecar를 주입한다. Istio Ingress Gateway에서 이 두
+Workload로 들어가는 통신은 `PeerAuthentication`의 `STRICT` mTLS를 요구하고,
+`AuthorizationPolicy`는 Ingress Gateway ServiceAccount에서 온 요청만 애플리케이션
+포트로 허용한다.
+
+Cognito JWT의 소유권과 도메인 권한 검증은 `audio-api`가 계속 수행한다. Istio
+정책은 애플리케이션 인증을 대체하지 않는다. `audio-events`와
+`audio-transcode`는 SQS·S3·RDS가 주요 통신 대상이므로 Sidecar를 주입하지 않고
+NetworkPolicy와 AWS IAM으로 보호한다.
+
+### Canary 원칙
+
+기본 배포는 `audio-api` stable에 100%를 전달한다. Canary 실험 시 같은 Service
+뒤에 `track=stable`, `track=canary`처럼 고정된 저가변성 라벨을 가진 Deployment를
+두고 DestinationRule subset과 VirtualService weight로 트래픽을 분리한다.
+
+```text
+정상 상태: stable 100 / canary 0
+실험 시작: stable 90 / canary 10
+승격:      stable 0 / canary 100
+롤백:      stable 100 / canary 0
+```
+
+Workload 이름에는 `v2`, 날짜와 `tmp`를 넣지 않는다. Canary는 API 응답 오류율과
+p95 latency가 승인 기준을 넘으면 즉시 stable 100%로 되돌린다.
 
 ## 6. 업로드와 검사 흐름
 
@@ -506,6 +635,7 @@ cntlp-aws-transcode/
 | `audio-api` | Presigned PUT, CloudFront 서명키 조회, 필요한 Secret 조회 |
 | `audio-events` | 세 Queue consume/publish, 필요한 Secret 조회 |
 | `audio-transcode` | CLEAN 원본 읽기, artifact 쓰기, 작업·결과 Queue 접근 |
+| `cert-manager` | 지정 Hosted Zone의 DNS-01 검증 레코드 생성·조회·삭제 |
 
 자동 확장을 선택할 때만 `keda-operator`의 Queue 조회 권한과
 `cluster-autoscaler`의 ASG 조회·용량 변경·인스턴스 종료 권한을 추가한다.
@@ -605,6 +735,11 @@ ASG를 활성화하기 전에 다음 자동화가 검증되어야 한다.
 | DLQ 적체 | 경보 후 원인 확인·수동 redrive | 실패 상태 |
 | 정적 Worker 용량 부족 | Queue 경보 후 replica·Node를 수동 조정 | `QUEUED` |
 | 자동 확장 실험 실패 | 확장을 중지하고 정적 Worker로 복귀 | `QUEUED` |
+| NLB Target 비정상 | Target health 경보, fail-open 가능성 포함 Gateway 상태 확인 | 처리 중인 비동기 작업 유지 |
+| Istio Gateway 준비 실패 | NLB health check 실패, Gateway 롤백 | 외부 API 일시 중단 |
+| 인증서 발급·갱신 실패 | 만료일 경보, 기존 Secret 유지 후 원인 복구 | 기존 인증서 유효기간 내 유지 |
+| Istio route 오류 | stable 100% 기준 설정으로 롤백 | 외부 API 일시 중단 가능 |
+| Canary 오류율·지연 초과 | Canary weight 0, stable 100% 복귀 | stable 응답 유지 |
 
 FFmpeg와 FFprobe에는 실행 시간, CPU, 메모리, 임시 디스크, 출력 크기 제한을 둔다.
 사용자가 올린 파일 이름을 shell command에 직접 보간하지 않고 argv로 전달한다.
@@ -614,6 +749,11 @@ FFmpeg와 FFprobe에는 실행 시간, CPU, 메모리, 임시 디스크, 출력 
 ### Metrics
 
 - API 요청 수·오류율·latency
+- NLB active flow·new flow·healthy target 수
+- Istio Gateway 요청 수·응답 코드·p50/p95 latency
+- `audio-api` stable·canary별 요청 비율과 오류율
+- Istio Proxy·Gateway CPU·메모리와 재시작 횟수
+- TLS 인증서 만료까지 남은 시간
 - upload 완료율과 크기 histogram
 - scan 결과별 개수
 - SQS visible·in-flight·oldest message age
@@ -633,6 +773,9 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 - 로그는 JSON 구조로 남긴다.
 - event ID, audio ID, job ID를 correlation field로 사용한다.
 - Presigned URL, JWT, CloudFront signature, AWS credential은 로그에 남기지 않는다.
+- VPC Flow Logs·NLB CloudWatch 지표와 Istio access log를 같은 시간축에서 조회할 수
+  있게 UTC timestamp를 유지한다.
+- Istio trace와 애플리케이션 trace는 같은 trace context를 사용한다.
 - API → Outbox → SQS → Worker → Result 흐름의 시간 구간을 분리해 측정한다.
 
 ## 19. 비용 경계
@@ -647,6 +790,12 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
   정적 Worker로 복귀한다.
 - DLQ 메시지는 비용과 장애 신호이므로 오래 방치하지 않는다.
 - CloudFront와 S3 request·transfer 비용을 MP3 기준선으로 기록한다.
+- Internet-facing NLB 시간·용량 단위 비용을 고정 인프라 비용에 포함한다.
+- Istio Gateway와 Proxy의 request·사용량은 앱과 분리해 OpenCost에서 표시한다.
+- `audio-transcode`에는 Sidecar를 주입하지 않아 트랙당 Worker 비용에 Mesh 비용을 섞지 않는다.
+- cert-manager와 DNS 운영 비용은 공개 HTTPS 비용으로 분리한다.
+- NLB에는 AWS WAF를 직접 연결할 수 없다는 제약을 수용한다. L7 WAF가 필수가 되면
+  CloudFront + WAF 추가 또는 ALB 재검토를 별도 결정으로 남긴다.
 
 ## 20. 저장소별 구현 경계
 
@@ -657,12 +806,23 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 
 ### `01-infra-provisioning`
 
+- `terraform/aws/network`: NLB Security Group과 Worker NodePort ingress
+- `terraform/aws/edge`: Internet-facing NLB, Listener, Target Group, Target 등록과
+  Public DNS alias
+- `terraform/aws/edge`: cert-manager DNS-01용 최소 IAM과 관련 출력
+- Edge는 Network·Compute remote state를 읽고 Worker instance ID 변경을 Target
+  attachment에 반영
 - S3, SQS, DLQ, EventBridge, GuardDuty, Cognito, CloudFront, IAM
 - 자동 확장 선택 시 ASG와 Packer·Ansible Worker image·bootstrap
 - Terraform 비용 상한과 destroy 경계
 
 ### `02-k8s-manifests`
 
+- Istio Helm chart 버전 고정, control plane과 `istio-ingressgateway` NodePort Service
+- Istio 업그레이드 전 diff·분석과 이전 버전 rollback 절차
+- cert-manager Certificate·Issuer 참조와 TLS Secret 연결
+- Gateway, VirtualService, DestinationRule
+- PeerAuthentication, AuthorizationPolicy와 선택적 Sidecar 주입
 - `apps` Namespace의 Deployment·Service
 - AWS Node selector
 - resource request·limit
@@ -704,16 +864,31 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 4. Cognito
 5. CloudFront OAC와 Signed URL
 6. Private RDS와 migration
+7. Internet-facing NLB, Target Group, Security Group과 Public DNS
+8. cert-manager DNS-01용 IAM
 
 ### Phase 3: Kubernetes 배포
 
-1. `audio-web`, `audio-api`, `audio-events` 배포
-2. AWS Node selector와 resource limit 적용
-3. NetworkPolicy와 Secret 연동
-4. replica 1인 `audio-transcode` Deployment 적용
-5. 실제 SQS·S3·RDS 통합 검증
+1. Istio control plane과 Ingress Gateway 배포
+2. Gateway NodePort와 NLB Target health 검증
+3. cert-manager 인증서 발급과 HTTPS·HTTP redirect 검증
+4. `audio-web`, `audio-api`, `audio-events` 배포
+5. `audio-web`, `audio-api` Sidecar와 STRICT mTLS 적용
+6. AuthorizationPolicy와 기본 stable 100% route 적용
+7. AWS Node selector, resource limit, NetworkPolicy와 Secret 연동
+8. replica 1인 `audio-transcode` Deployment 적용
+9. 실제 SQS·S3·RDS 통합 검증
 
-### Phase 4: 자동 확장 채택 판단
+### Phase 4: Service Mesh 검증
+
+1. NLB → Gateway → Web·API 경로와 Source IP 확인
+2. 외부 `/metrics`·`/healthz` 차단과 내부 probe 확인
+3. Gateway → Web·API mTLS와 비인가 Workload 차단 확인
+4. `audio-api` stable 90%·canary 10% 트래픽 분배 시험
+5. Canary 지연·오류 주입 후 stable 100% 롤백
+6. Istio 적용 전후 latency·CPU·메모리·OpenCost 비교
+
+### Phase 5: 자동 확장 채택 판단
 
 1. 정적 Worker의 Queue 대기시간·처리량·유휴 비용 측정
 2. 필요하면 KEDA ScaledObject와 ScaledJob 비교 실험
@@ -721,7 +896,7 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 4. ASG를 선택하면 `min=0`, `max=1`로 scale-from-zero 시험
 5. 채택 근거와 비용 상한을 별도 결정으로 기록
 
-### Phase 5: 부하·FinOps 실험
+### Phase 6: 부하·FinOps 실험
 
 1. MP3 기준선 측정
 2. Queue 적체와 정적 Worker 처리량 시험
@@ -737,6 +912,12 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 - 같은 SQS 메시지를 두 번 처리해도 DB와 artifact가 중복 생성되지 않는다.
 - Worker가 중간에 종료되어도 메시지가 다시 처리된다.
 - MP3 Range GET seek와 waveform click seek가 동작한다.
+- Public DNS의 HTTPS가 NLB와 Istio Gateway를 통해 Web·API에 도달한다.
+- HTTP 요청은 Istio Gateway에서 HTTPS로 리다이렉트된다.
+- NLB Target health가 Gateway readiness와 일치하고 NodePort 직접 접근은 차단된다.
+- Gateway에서 `audio-web`과 `audio-api`까지 STRICT mTLS가 적용된다.
+- 비인가 ServiceAccount는 Mesh 대상 Workload에 접근하지 못한다.
+- stable 90%·canary 10% 분배와 stable 100% 롤백을 재현할 수 있다.
 - API와 Worker는 GCP·On-Prem Node에 배치되지 않는다.
 - Queue가 비면 정적 Worker가 추가 작업 없이 long polling 상태를 유지한다.
 - 파일 1건 기준 처리 시간·오류·AWS 사용량을 관측할 수 있다.
@@ -778,6 +959,13 @@ VOD 오디오 한 rendition에는 playlist·segment·인증·CORS·요청 수 �
 Worker가 DB credential과 schema에 결합되고 Node가 늘어날수록 DB 접근 경계가
 넓어진다. Worker는 결과 Queue만 발행하고 `audio-events`가 DB를 갱신한다.
 
+### ALB에서 직접 애플리케이션으로 라우팅
+
+ALB는 ACM TLS 종료, 경로 라우팅과 WAF 연동을 단순하게 제공하지만 Service Mesh의
+Ingress, Canary와 mTLS 실험 경계를 ALB 뒤로 밀어낸다. 이 설계는 NLB를 L4 전달에만
+사용하고 Istio가 TLS와 L7 정책을 소유하도록 선택한다. 대신 Gateway·인증서 운영
+비용과 NLB의 AWS WAF 직접 연동 불가를 명시적인 트레이드오프로 수용한다.
+
 ## 24. 참고 문서
 
 - [Amazon S3 Presigned URL](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)
@@ -786,6 +974,17 @@ Worker가 DB credential과 schema에 결합되고 Node가 늘어날수록 DB 접
 - [Amazon SQS 선택 가이드](https://docs.aws.amazon.com/pdfs/decision-guides/latest/sns-or-sqs-or-eventbridge/sns-or-sqs-or-eventbridge.pdf)
 - [CloudFront Range GET](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RangeGETs.html)
 - [CloudFront S3 OAC](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html)
+- [AWS Network Load Balancer](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/introduction.html)
+- [NLB Target Group과 Health Check](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/target-group-health-checks.html)
+- [NLB TCP TLS Pass-through](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-listeners.html)
+- [NLB Security Group](https://docs.aws.amazon.com/elasticloadbalancing/latest/network/load-balancer-security-groups.html)
+- [AWS WAF 연결 가능 자원](https://docs.aws.amazon.com/waf/latest/developerguide/web-acl-associating-aws-resource.html)
+- [Istio Ingress Gateway](https://istio.io/latest/docs/tasks/traffic-management/ingress/)
+- [Istio Secure Gateway](https://istio.io/latest/docs/tasks/traffic-management/ingress/secure-ingress/)
+- [Istio PeerAuthentication](https://istio.io/latest/docs/reference/config/security/peer_authentication/)
+- [Istio Sidecar Injection](https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/)
+- [Istio Traffic Shifting](https://istio.io/latest/docs/tasks/traffic-management/traffic-shifting/)
+- [cert-manager DNS-01](https://cert-manager.io/docs/configuration/acme/dns01/)
 - [KEDA SQS Scaler](https://keda.sh/docs/2.20/scalers/aws-sqs/)
 - [KEDA ScaledJob](https://keda.sh/docs/2.20/concepts/scaling-jobs/)
 - [Kubernetes Node Autoscaling](https://kubernetes.io/docs/concepts/cluster-administration/node-autoscaling/)

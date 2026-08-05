@@ -24,7 +24,7 @@ shared/schema/     api 와 worker 가 주고받는 메시지 형식
 [`docs/audio-service-architecture.md`](docs/audio-service-architecture.md)에
 정리한다.
 
-## 빌드하면 무슨 일이 일어나나
+## 빌드 시 흐름
 
 ```
 푸시 → Jenkins 빌드 → 이미지 푸시 → k8s-manifests 에 PR → auto-merge → ArgoCD 배포

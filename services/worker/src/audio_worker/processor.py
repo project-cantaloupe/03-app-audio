@@ -23,7 +23,7 @@ class WorkerError(RuntimeError):
 class ProcessorConfig:
     artifact_bucket: str
     maximum_duration_seconds: int = 7200
-    clean_tag_key: str = "GuardDutyMalwareScanStatus"
+    clean_tag_key: str = "CntlpScanStatus"
     clean_tag_value: str = "NO_THREATS_FOUND"
 
 

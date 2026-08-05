@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-for command in curl docker jq openssl uuidgen; do
+for command in curl docker jq openssl; do
   command -v "$command" >/dev/null || {
     echo "required command not found: $command" >&2
     exit 1
@@ -55,40 +55,6 @@ curl --fail-with-body --silent --show-error \
   --request POST \
   --header "X-Cantaloupe-Subject: $owner_subject" \
   "$api_url/v1/audios/$audio_id/complete" >/dev/null
-
-source_key=$(cd "$repository_root" && docker compose exec -T localstack \
-  awslocal s3api list-objects-v2 \
-  --bucket cntlp-aws-quarantine \
-  --prefix "incoming/$audio_id/" \
-  --query 'Contents[0].Key' \
-  --output text)
-
-source_version=$(cd "$repository_root" && docker compose exec -T localstack \
-  awslocal s3api head-object \
-  --bucket cntlp-aws-quarantine \
-  --key "$source_key" \
-  --query VersionId \
-  --output text)
-
-(cd "$repository_root" && docker compose exec -T localstack \
-  awslocal s3api put-object-tagging \
-  --bucket cntlp-aws-quarantine \
-  --key "$source_key" \
-  --version-id "$source_version" \
-  --tagging '{"TagSet":[{"Key":"GuardDutyMalwareScanStatus","Value":"NO_THREATS_FOUND"}]}')
-
-scan_event=$(jq -n \
-  --arg event_id "$(uuidgen | tr '[:upper:]' '[:lower:]')" \
-  --arg bucket "cntlp-aws-quarantine" \
-  --arg key "$source_key" \
-  --arg version_id "$source_version" \
-  --arg occurred_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-  '{schema_version:1,event_id:$event_id,bucket:$bucket,key:$key,version_id:$version_id,status:"NO_THREATS_FOUND",occurred_at:$occurred_at}')
-
-(cd "$repository_root" && docker compose exec -T localstack \
-  awslocal sqs send-message \
-  --queue-url "http://localhost:4566/queue/ap-northeast-2/000000000000/cntlp-aws-queue-scan-result" \
-  --message-body "$scan_event" >/dev/null)
 
 status=""
 for _ in $(seq 1 90); do

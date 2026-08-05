@@ -78,3 +78,12 @@ type SourceObject struct {
 	ContentType    string
 	ChecksumSHA256 string
 }
+
+type SourceScanRequest struct {
+	EventID    string
+	Bucket     string
+	Key        string
+	VersionID  string
+	Status     string
+	OccurredAt time.Time
+}

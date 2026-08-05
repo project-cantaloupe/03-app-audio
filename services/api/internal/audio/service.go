@@ -21,6 +21,10 @@ type ObjectStore interface {
 	HeadSource(context.Context, Audio) (SourceObject, error)
 }
 
+type SourceScanAdapter interface {
+	Submit(context.Context, SourceScanRequest) error
+}
+
 type ArtifactURLSigner interface {
 	Sign(context.Context, string, time.Time) (string, error)
 }
@@ -36,6 +40,7 @@ type Clock interface {
 type Service struct {
 	repository     Repository
 	objectStore    ObjectStore
+	scanAdapter    SourceScanAdapter
 	artifactURLs   ArtifactURLSigner
 	ids            IDGenerator
 	clock          Clock
@@ -44,10 +49,11 @@ type Service struct {
 	playbackExpiry time.Duration
 }
 
-func NewService(repository Repository, objectStore ObjectStore, artifactURLs ArtifactURLSigner, ids IDGenerator, clock Clock, bucket string, uploadExpiry, playbackExpiry time.Duration) *Service {
+func NewService(repository Repository, objectStore ObjectStore, scanAdapter SourceScanAdapter, artifactURLs ArtifactURLSigner, ids IDGenerator, clock Clock, bucket string, uploadExpiry, playbackExpiry time.Duration) *Service {
 	return &Service{
-		repository: repository, objectStore: objectStore, artifactURLs: artifactURLs,
-		ids: ids, clock: clock, bucket: bucket, uploadExpiry: uploadExpiry,
+		repository: repository, objectStore: objectStore, scanAdapter: scanAdapter,
+		artifactURLs: artifactURLs,
+		ids:          ids, clock: clock, bucket: bucket, uploadExpiry: uploadExpiry,
 		playbackExpiry: playbackExpiry,
 	}
 }
@@ -117,10 +123,10 @@ func (s *Service) CompleteUpload(ctx context.Context, ownerSubject, audioID stri
 	if record.OwnerSubject != ownerSubject {
 		return Audio{}, ErrForbidden
 	}
-	if record.Status != StatusUploadPending {
-		if record.UploadVerified {
-			return record, nil
-		}
+	if record.UploadVerified {
+		return record, nil
+	}
+	if record.Status != StatusUploadPending && record.Status != StatusScanning {
 		return Audio{}, fmt.Errorf("%w: upload cannot be completed in status %s", ErrInvalidInput, record.Status)
 	}
 
@@ -136,13 +142,21 @@ func (s *Service) CompleteUpload(ctx context.Context, ownerSubject, audioID stri
 		return Audio{}, ErrObjectMismatch
 	}
 
+	now := s.clock.Now().UTC()
+	if err := s.scanAdapter.Submit(ctx, SourceScanRequest{
+		EventID: record.UploadID, Bucket: record.SourceBucket, Key: record.SourceKey,
+		VersionID: object.VersionID, Status: "NO_THREATS_FOUND", OccurredAt: now,
+	}); err != nil {
+		return Audio{}, fmt.Errorf("submit development scan result: %w", err)
+	}
+
 	updated, err := s.repository.MarkUploadVerified(
 		ctx,
 		audioID,
 		object,
 		s.ids.New(),
 		s.ids.New(),
-		s.clock.Now().UTC(),
+		now,
 	)
 	if err != nil {
 		return Audio{}, fmt.Errorf("mark upload verified: %w", err)

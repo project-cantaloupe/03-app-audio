@@ -19,7 +19,7 @@ shared/schema/     api 와 worker 가 주고받는 메시지 형식
 
 ## 아키텍처
 
-오디오 업로드, GuardDuty 검사, SQS, FFmpeg 변환, MP3 재생, waveform,
+오디오 업로드, 악성코드 검사 경계, SQS, FFmpeg 변환, MP3 재생, waveform,
 정적 Worker 기준과 자동 확장 도입 판단 기준은
 [`docs/audio-service-architecture.md`](docs/audio-service-architecture.md)에
 정리한다.
@@ -45,8 +45,8 @@ Kustomization이 함께 준비된 뒤 파이프라인을 활성화한다. 현재
 
 첫 번째 MVP 기반은 다음 경계까지 구현한다.
 
-- `audio-api`: 업로드 요청 검증, 불변 S3 key 생성, Presigned PUT, HEAD 검증
-- `audio-events`: GuardDuty 결과와 Worker 결과의 중복 처리, Transactional Outbox
+- `audio-api`: 업로드 요청 검증, 불변 S3 key 생성, Presigned PUT, HEAD 검증과 개발용 Scan Adapter
+- `audio-events`: Scan 결과와 Worker 결과의 중복 처리, Transactional Outbox
 - `audio-transcode`: CLEAN tag와 checksum 재검증, MP3와 waveform 생성, 결과 발행
 - `audio-web`: 단일 시네마틱 랜딩, 실제 Presigned 업로드, 처리 상태 polling, MP3 재생과 사전 생성 waveform 표시
 - `audio-api`: READY·소유권 확인 후 MP3와 waveform 만료 URL 발급
@@ -59,12 +59,17 @@ Kustomization이 함께 준비된 뒤 파이프라인을 활성화한다. 현재
 - Cognito JWT 검증. 현재 `AUTH_MODE=development`에서만 개발용 subject header 사용
 - CloudFront signing private key의 Kubernetes Secret mount와 API 환경 변수 연결
 - 목록·검색·Creator·Playlist API와 해당 화면의 실제 데이터
-- GuardDuty Malware Protection Plan과 실제 AWS Audio 데이터 경로 E2E 검증
+- 실제 악성코드 검사기와 AWS Audio 데이터 경로 E2E 검증
 - Kubernetes 배포 매니페스트
 
-`01-infra-provisioning`의 S3, SQS, EventBridge와 CloudFront는 GuardDuty Protection
-Plan을 제외하고 적용됐다. 이 상태는 AWS Resource 준비를 의미하며 Application의
-실제 AWS 통합 검증을 의미하지 않는다.
+`01-infra-provisioning`의 S3, SQS와 CloudFront는 적용됐다. 이 상태는 AWS Resource
+준비를 의미하며 Application의 실제 AWS 통합 검증을 의미하지 않는다.
+
+현재 악성코드 검사기는 없다. `audio-api`의 개발용 Scan Adapter는 `/complete`에서
+정확한 S3 Version을 검증한 뒤 `CntlpScanStatus=NO_THREATS_FOUND` 태그와
+`scan-result` 메시지를 기록한다. 이는 Queue·상태 기계·Worker 계약을 검증하기
+위한 대체 경로이지 실제 보안 검사가 아니다. API는 현재 `AUTH_MODE=development`
+외에는 시작하지 않으므로 이 경로를 공개 환경에 배포하지 않는다.
 
 개발용 인증은 공개 환경에 배포하지 않는다.
 

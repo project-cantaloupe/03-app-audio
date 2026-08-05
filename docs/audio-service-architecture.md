@@ -5,8 +5,8 @@
 - 상태: MVP 구현 기준
 - 변경일: 2026-08-05
 - 외부 진입 결정: ALB 직접 라우팅 대신 NLB + Istio Ingress Gateway
-- 구현 상태: 로컬 업로드→검사→변환→Signed URL→재생 artifact E2E 검증,
-  AWS Audio Terraform은 GuardDuty Protection Plan 제외 적용, Kubernetes
+- 구현 상태: 로컬 업로드→개발용 Scan Adapter→변환→Signed URL→재생 artifact E2E 검증,
+  AWS Audio Terraform 적용 완료, 실제 악성코드 검사기 미채택, Kubernetes
   Application Runtime 미적용
 - 대상: Cantaloupe 오디오 업로드·검사·변환·재생 서비스
 - 애플리케이션 저장소: `03-app-audio`
@@ -52,7 +52,7 @@ HLS는 MP3 기준선의 재생 품질과 비용을 측정한 뒤 비교 실험�
 | API | Go | 작은 메모리 사용량과 명확한 동시성·타임아웃 제어를 우선한다. |
 | Worker | Python + FFmpeg | 미디어 처리 도구 연동과 실험 속도를 우선한다. |
 | Queue | SQS Standard + DLQ | Queue 서버를 클러스터에서 운영하지 않고 at-least-once 전달을 멱등 처리로 흡수한다. |
-| 악성코드 검사 | GuardDuty Malware Protection for S3 | ClamAV 메모리와 시그니처 운영 부담을 AWS 관리형 검사로 대체한다. |
+| 악성코드 검사 | 미채택. 개발용 Scan Adapter가 계약만 유지 | 대상 AWS 계정이 Free account plan이라 GuardDuty를 구독할 수 없고, ClamAV는 단일 Worker의 메모리 기준선을 깬다. 격리·계약·상태 기계는 유지하고 검사기 자리만 비워 둔다. |
 | 재생 | Progressive MP3 | VOD 오디오에 HLS playlist·segment 복잡도를 추가하지 않고 Range GET으로 seek한다. |
 | 파형 | 사전 생성한 JSON | 재생 시 원본을 다시 분석하지 않고 브라우저에는 작은 peak 데이터만 전달한다. |
 | 인증 | Cognito | 비밀번호를 애플리케이션 DB에서 관리하지 않고 JWT subject를 소유자 식별자로 쓴다. |
@@ -126,8 +126,6 @@ flowchart LR
         RDS["PostgreSQL RDS"]
         Incoming["S3 quarantine bucket"]
         Artifacts["S3 audio artifact bucket"]
-        GuardDuty["GuardDuty Malware Protection"]
-        EventBridge["EventBridge"]
         ScanQueue["SQS scan-result"]
         JobQueue["SQS transcode"]
         ResultQueue["SQS transcode-result"]
@@ -144,9 +142,8 @@ flowchart LR
     API -. "Presigned PUT" .-> Client
     Client --> Incoming
 
-    Incoming --> GuardDuty
-    GuardDuty --> EventBridge
-    EventBridge --> ScanQueue
+    API -. "HEAD 검증 + 개발용 스캔 상태 태그" .-> Incoming
+    API -. "scan-result 발행" .-> ScanQueue
     ScanQueue --> Events
     Events --> RDS
     Events --> JobQueue
@@ -280,8 +277,6 @@ sequenceDiagram
     participant API as "audio-api"
     participant DB as "PostgreSQL"
     participant S3 as "S3 quarantine"
-    participant GD as "GuardDuty"
-    participant EB as "EventBridge"
     participant Q as "scan-result Queue"
     participant Events as "audio-events"
 
@@ -289,13 +284,12 @@ sequenceDiagram
     API->>DB: "audio와 upload 레코드 생성"
     API-->>Client: "100 MB 이하 Presigned PUT + 필수 header"
     Client->>S3: "원본 직접 업로드"
-    S3-->>GD: "Object Created"
     Client->>API: "업로드 완료 요청"
     API->>S3: "HEAD object"
     API->>DB: "크기·MIME·checksum·object version 검증 결과 저장"
 
-    GD->>EB: "검사 결과"
-    EB->>Q: "at-least-once event"
+    API->>S3: "CntlpScanStatus 태그 기록"
+    API->>Q: "scan-result 발행 (개발용 대체 경로)"
     Events->>Q: "메시지 수신"
     Events->>DB: "중복 확인 후 scan 결과 저장"
 
@@ -308,9 +302,9 @@ sequenceDiagram
     end
 ```
 
-GuardDuty 결과와 업로드 완료 요청은 순서가 뒤바뀔 수 있다. DB에는
-`upload_verified`와 `scan_status`를 따로 저장하고 두 조건이 모두 충족됐을 때만
-트랜스코딩을 요청한다.
+검사 결과와 업로드 완료 요청은 실제 검사기를 도입하면 순서가 뒤바뀔 수 있다.
+현재 개발용 대체 경로에서도 DB에는 `upload_verified`와 `scan_status`를 따로
+저장하고 두 조건이 모두 충족됐을 때만 트랜스코딩을 요청하는 구조를 유지한다.
 
 ### 업로드 검증
 
@@ -472,7 +466,7 @@ Python Worker는 RDS에 연결하지 않고 S3와 SQS만 사용한다.
 | `upload_id` | 업로드 재사용 방지 ID |
 | `source_bucket`, `source_key`, `source_version` | 원본 위치 |
 | `source_checksum`, `source_size`, `source_mime` | 검증 정보 |
-| `scan_status` | GuardDuty 결과 |
+| `scan_status` | 원본 검사 결과 |
 | `duration_ms` | FFprobe 결과 |
 | `playback_key`, `waveform_key` | artifact 위치 |
 | `created_at`, `updated_at`, `deleted_at` | 수명주기 |
@@ -502,14 +496,14 @@ Python Worker는 RDS에 연결하지 않고 S3와 SQS만 사용한다.
 
 ### `processed_events`
 
-`audio-events`가 이미 처리한 EventBridge·SQS event ID를 기록한다. 같은 이벤트가
+`audio-events`가 이미 처리한 SQS event ID를 기록한다. 같은 이벤트가
 재전달되면 DB 상태를 다시 변경하지 않는다.
 
 ## 12. Queue와 메시지 계약
 
 | Queue | Producer | Consumer | DLQ |
 | --- | --- | --- | --- |
-| `scan-result` | EventBridge | `audio-events` | `scan-result-dlq` |
+| `scan-result` | `audio-api`의 Scan Adapter | `audio-events` | `scan-result-dlq` |
 | `transcode` | Outbox Publisher | `audio-transcode` | `transcode-dlq` |
 | `transcode-result` | `audio-transcode` | `audio-events` | `transcode-result-dlq` |
 
@@ -603,9 +597,9 @@ cntlp-aws-transcode/
 - S3 Block Public Access를 켠다.
 - Bucket owner enforced를 사용하고 ACL을 사용하지 않는다.
 - 기본 암호화를 켠다.
-- GuardDuty post-scan object tagging을 켠다.
+- 원본 객체에 검사 상태 태그를 기록한다. 현재 기록 주체는 개발용 `audio-api`다.
 - CloudFront는 OAC를 통해 artifact bucket의 `GetObject`만 허용한다.
-- Transcode Worker는 GuardDuty 결과 tag가 `NO_THREATS_FOUND`인 원본만 읽는다.
+- Transcode Worker는 `CntlpScanStatus` tag가 `NO_THREATS_FOUND`인 원본만 읽는다.
 - 감염 원본과 완료되지 않은 업로드에는 Lifecycle 보존기간을 적용한다.
 - 원본과 artifact 삭제는 DB 논리 삭제 후 비동기 정리로 처리한다.
 
@@ -643,8 +637,9 @@ Git과 매니페스트에는 넣지 않는다.
 
 ### Worker 실행 격리
 
-GuardDuty가 악성코드를 찾지 못했다는 결과가 미디어 decoder 취약점까지 없다는
-뜻은 아니다. FFmpeg Worker는 다음 제한을 적용한다.
+검사에서 악성코드가 나오지 않았다는 결과가 미디어 decoder 취약점까지 없다는
+뜻은 아니다. 현재는 실제 검사기 자체가 없으므로 이 제한의 비중이 더 크다.
+FFmpeg Worker는 다음 제한을 적용한다.
 
 - non-root 사용자로 실행
 - `allowPrivilegeEscalation: false`
@@ -719,8 +714,8 @@ ASG를 활성화하기 전에 다음 자동화가 검증되어야 한다.
 | --- | --- | --- |
 | Presigned URL 만료 | 새 upload ID 발급 | `UPLOAD_PENDING` |
 | 업로드 크기·checksum 불일치 | 객체 삭제 대상으로 표시 | `UPLOAD_FAILED` |
-| GuardDuty 위협 발견 | 트랜스코딩 금지, 격리 보존 | `QUARANTINED` |
-| GuardDuty 검사 불가 | 자동 통과 금지, 운영 확인 | `SCAN_FAILED` |
+| 검사에서 위협 발견 | 트랜스코딩 금지, 격리 보존 | `QUARANTINED` |
+| 검사 불가 | 자동 통과 금지, 운영 확인 | `SCAN_FAILED` |
 | SQS 중복 메시지 | event ID·job ID로 무시 또는 안전 재실행 | 기존 상태 유지 |
 | Worker Pod 종료 | visibility timeout 후 재전달 | `QUEUED` 또는 `TRANSCODING` |
 | FFmpeg 제한 위반 | 비재시도 오류로 DLQ | `TRANSCODE_FAILED` |
@@ -773,8 +768,6 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 
 ## 19. 비용 경계
 
-- GuardDuty Malware Protection for S3 Free Tier를 넘는 객체 수와 scan byte를
-  Budget 경보에 포함한다.
 - 원본과 artifact를 서로 다른 버킷에 저장해 IAM, Lifecycle과 버킷별 저장량 측정을
   분리한다. 버킷 분리는 측정 경계를 만들며 그 자체로 저장 비용을 줄이지 않는다.
 - `cntlp-aws-quarantine`의 128 KB 초과 원본은 0~29일 Standard, 30~59일
@@ -811,7 +804,7 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 - `terraform/aws/edge`: cert-manager DNS-01용 최소 IAM과 관련 출력
 - Edge는 Network·Compute remote state를 읽고 Worker instance ID 변경을 Target
   attachment에 반영
-- S3, SQS, DLQ, EventBridge, GuardDuty, Cognito, CloudFront, IAM
+- S3, SQS, DLQ, Cognito, CloudFront, IAM
 - 자동 확장 선택 시 ASG와 Packer·Ansible Worker image·bootstrap
 - Terraform 비용 상한과 destroy 경계
 
@@ -859,13 +852,12 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 ### Phase 2: AWS 관리형 자원 연결
 
 1. Private S3와 Lifecycle
-2. GuardDuty Malware Protection과 EventBridge
-3. SQS 세트와 DLQ
-4. Cognito
-5. CloudFront OAC와 Signed URL
-6. Private RDS와 migration
-7. Internet-facing NLB, Target Group, Security Group과 Public DNS
-8. cert-manager DNS-01용 IAM
+2. SQS 세트와 DLQ
+3. Cognito
+4. CloudFront OAC와 Signed URL
+5. Private RDS와 migration
+6. Internet-facing NLB, Target Group, Security Group과 Public DNS
+7. cert-manager DNS-01용 IAM
 
 ### Phase 3: Kubernetes 배포
 
@@ -951,7 +943,10 @@ API Pod의 메모리·네트워크를 파일 전달에 사용하고 확장 병�
 ### ClamAV Pod
 
 악성코드 엔진과 signature 갱신을 직접 운영하고 현재 AWS Worker 자원을
-소비하므로 MVP에서 제외한다. GuardDuty와 ClamAV 비교는 별도 실험으로 남긴다.
+소비하므로 MVP에서 제외한다. 단일 AWS Service Worker에서 web·api·worker를 함께
+실행하는 구성에서는 signature DB 상주 메모리만으로 기준선이 깨진다. 관리형
+대안인 GuardDuty도 계정 플랜 제약으로 쓸 수 없어, MVP는 검사기 없이 계약만
+유지한다. 두 방식의 비교는 별도 실험으로 남긴다.
 
 ### HLS
 
@@ -974,8 +969,6 @@ NLB의 AWS WAF 직접 연동 불가를 명시적인 트레이드오프로 수용
 ## 24. 참고 문서
 
 - [Amazon S3 Presigned URL](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)
-- [GuardDuty Malware Protection for S3 동작](https://docs.aws.amazon.com/guardduty/latest/ug/how-malware-protection-for-s3-gdu-works.html)
-- [GuardDuty Malware Protection for S3 비용](https://docs.aws.amazon.com/guardduty/latest/ug/pricing-malware-protection-for-s3-guardduty.html)
 - [Amazon SQS 선택 가이드](https://docs.aws.amazon.com/pdfs/decision-guides/latest/sns-or-sqs-or-eventbridge/sns-or-sqs-or-eventbridge.pdf)
 - [CloudFront Range GET](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RangeGETs.html)
 - [CloudFront S3 OAC](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html)

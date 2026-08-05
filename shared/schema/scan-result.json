@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "원본 검사 결과 메시지",
-  "description": "EventBridge가 GuardDuty 결과를 정규화해 audio-events에 전달하는 계약",
+  "description": "원본 검사 결과를 audio-events에 전달하는 계약. 발행 주체는 검사기 구현에 따라 달라진다",
   "type": "object",
   "additionalProperties": false,
   "required": [

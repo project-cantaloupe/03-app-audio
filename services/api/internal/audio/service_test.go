@@ -37,6 +37,18 @@ func (f fakeObjectStore) HeadSource(context.Context, Audio) (SourceObject, error
 	return f.object, nil
 }
 
+type fakeScanAdapter struct {
+	request SourceScanRequest
+	err     error
+	calls   int
+}
+
+func (f *fakeScanAdapter) Submit(_ context.Context, request SourceScanRequest) error {
+	f.calls++
+	f.request = request
+	return f.err
+}
+
 type fakeArtifactSigner struct{}
 
 func (fakeArtifactSigner) Sign(_ context.Context, key string, _ time.Time) (string, error) {
@@ -59,7 +71,7 @@ func validChecksum() string { return base64.StdEncoding.EncodeToString(make([]by
 func TestCreateUploadBuildsImmutableSourceKey(t *testing.T) {
 	repository := &fakeRepository{}
 	clock := fixedClock{value: time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)}
-	service := NewService(repository, fakeObjectStore{}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"audio-id", "upload-id"}}, clock, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+	service := NewService(repository, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"audio-id", "upload-id"}}, clock, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
 	result, err := service.CreateUpload(context.Background(), CreateUploadInput{
 		OwnerSubject: "cognito-sub", Title: " test audio ", ContentType: "audio/mpeg",
@@ -80,7 +92,7 @@ func TestCreateUploadBuildsImmutableSourceKey(t *testing.T) {
 }
 
 func TestCreateUploadRejectsOversizedObject(t *testing.T) {
-	service := NewService(&fakeRepository{}, fakeObjectStore{}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+	service := NewService(&fakeRepository{}, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 	_, err := service.CreateUpload(context.Background(), CreateUploadInput{
 		OwnerSubject: "owner", Title: "title", ContentType: "audio/wav",
 		ContentLength: MaxUploadBytes + 1, ChecksumSHA256: validChecksum(),
@@ -93,16 +105,88 @@ func TestCreateUploadRejectsOversizedObject(t *testing.T) {
 func TestCompleteUploadRejectsChecksumMismatch(t *testing.T) {
 	checksum := validChecksum()
 	repository := &fakeRepository{record: Audio{
-		ID: "audio-id", OwnerSubject: "owner", Status: StatusUploadPending,
+		ID: "audio-id", UploadID: "upload-id", OwnerSubject: "owner", Status: StatusUploadPending,
 		SourceSize: 10, SourceContentType: "audio/mpeg", SourceChecksum: checksum,
 	}}
 	service := NewService(repository, fakeObjectStore{object: SourceObject{
 		VersionID: "v1", ContentLength: 10, ContentType: "audio/mpeg", ChecksumSHA256: "different",
-	}}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"job-id", "event-id"}}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+	}}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"job-id", "event-id"}}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
 	_, err := service.CompleteUpload(context.Background(), "owner", "audio-id")
 	if !errors.Is(err, ErrObjectMismatch) {
 		t.Fatalf("expected ErrObjectMismatch, got %v", err)
+	}
+}
+
+func TestCompleteUploadSubmitsStableCleanResultBeforeVerification(t *testing.T) {
+	now := time.Date(2026, 8, 5, 13, 0, 0, 0, time.UTC)
+	checksum := validChecksum()
+	repository := &fakeRepository{record: Audio{
+		ID: "audio-id", UploadID: "upload-id", OwnerSubject: "owner",
+		Status: StatusUploadPending, SourceBucket: "cntlp-aws-quarantine",
+		SourceKey: "incoming/audio-id/upload-id/source", SourceSize: 10,
+		SourceContentType: "audio/mpeg", SourceChecksum: checksum,
+	}}
+	scanAdapter := &fakeScanAdapter{}
+	service := NewService(repository, fakeObjectStore{object: SourceObject{
+		VersionID: "v1", ContentLength: 10, ContentType: "audio/mpeg",
+		ChecksumSHA256: checksum,
+	}}, scanAdapter, fakeArtifactSigner{}, &sequenceIDs{values: []string{"job-id", "event-id"}}, fixedClock{value: now}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+
+	result, err := service.CompleteUpload(context.Background(), "owner", "audio-id")
+	if err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+	if !result.UploadVerified {
+		t.Fatal("upload was not marked verified")
+	}
+	if scanAdapter.request.EventID != "upload-id" {
+		t.Fatalf("scan event must reuse stable upload ID, got %q", scanAdapter.request.EventID)
+	}
+	if scanAdapter.request.VersionID != "v1" || scanAdapter.request.Status != "NO_THREATS_FOUND" {
+		t.Fatalf("unexpected scan request: %#v", scanAdapter.request)
+	}
+	if !scanAdapter.request.OccurredAt.Equal(now) {
+		t.Fatalf("unexpected scan occurrence time: %s", scanAdapter.request.OccurredAt)
+	}
+}
+
+func TestCompleteUploadDoesNotVerifyWhenScanSubmissionFails(t *testing.T) {
+	checksum := validChecksum()
+	repository := &fakeRepository{record: Audio{
+		ID: "audio-id", UploadID: "upload-id", OwnerSubject: "owner",
+		Status: StatusUploadPending, SourceBucket: "cntlp-aws-quarantine",
+		SourceKey: "incoming/audio-id/upload-id/source", SourceSize: 10,
+		SourceContentType: "audio/mpeg", SourceChecksum: checksum,
+	}}
+	service := NewService(repository, fakeObjectStore{object: SourceObject{
+		VersionID: "v1", ContentLength: 10, ContentType: "audio/mpeg",
+		ChecksumSHA256: checksum,
+	}}, &fakeScanAdapter{err: errors.New("queue unavailable")}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+
+	_, err := service.CompleteUpload(context.Background(), "owner", "audio-id")
+	if err == nil {
+		t.Fatal("expected scan submission failure")
+	}
+	if repository.record.UploadVerified {
+		t.Fatal("upload must remain unverified when scan submission fails")
+	}
+}
+
+func TestCompleteUploadDoesNotRepublishVerifiedUpload(t *testing.T) {
+	repository := &fakeRepository{record: Audio{
+		ID: "audio-id", UploadID: "upload-id", OwnerSubject: "owner",
+		Status: StatusScanning, UploadVerified: true,
+	}}
+	scanAdapter := &fakeScanAdapter{}
+	service := NewService(repository, fakeObjectStore{}, scanAdapter, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+
+	_, err := service.CompleteUpload(context.Background(), "owner", "audio-id")
+	if err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+	if scanAdapter.calls != 0 {
+		t.Fatalf("verified upload republished scan result %d times", scanAdapter.calls)
 	}
 }
 
@@ -113,7 +197,7 @@ func TestGetPlaybackSignsReadyArtifacts(t *testing.T) {
 		Status: StatusReady, PlaybackKey: "audios/audio-id/playback.mp3",
 		WaveformKey: "audios/audio-id/waveform.json",
 	}}
-	service := NewService(repository, fakeObjectStore{}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{value: now}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+	service := NewService(repository, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{value: now}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
 	result, err := service.GetPlayback(context.Background(), "owner", "audio-id")
 	if err != nil {
@@ -132,7 +216,7 @@ func TestGetPlaybackRejectsAudioBeforeReady(t *testing.T) {
 		ID: "audio-id", OwnerSubject: "owner", Visibility: VisibilityPrivate,
 		Status: StatusTranscoding,
 	}}
-	service := NewService(repository, fakeObjectStore{}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+	service := NewService(repository, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
 	_, err := service.GetPlayback(context.Background(), "owner", "audio-id")
 	if !errors.Is(err, ErrNotReady) {

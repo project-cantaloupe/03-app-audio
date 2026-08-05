@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/artifacturl"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/audio"
@@ -23,6 +24,7 @@ import (
 	"github.com/project-cantaloupe/app-audio/services/api/internal/platform"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/postgres"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/s3store"
+	"github.com/project-cantaloupe/app-audio/services/api/internal/scanadapter"
 )
 
 func main() {
@@ -41,6 +43,7 @@ func run(parent context.Context, logger *log.Logger) error {
 		return errors.New("only AUTH_MODE=development is implemented; Cognito verification must be added before public deployment")
 	}
 	logger.Print("warning: development subject header authentication is enabled")
+	logger.Print("warning: development scan adapter marks verified uploads clean without malware inspection")
 
 	ctx, cancel := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -63,6 +66,11 @@ func run(parent context.Context, logger *log.Logger) error {
 		if config.AWSEndpointURL != "" {
 			options.BaseEndpoint = aws.String(config.AWSEndpointURL)
 			options.UsePathStyle = true
+		}
+	})
+	sqsClient := sqs.NewFromConfig(awsConfig, func(options *sqs.Options) {
+		if config.AWSEndpointURL != "" {
+			options.BaseEndpoint = aws.String(config.AWSEndpointURL)
 		}
 	})
 	presignClient := s3Client
@@ -94,6 +102,7 @@ func run(parent context.Context, logger *log.Logger) error {
 	service := audio.NewService(
 		repository,
 		objectStore,
+		scanadapter.NewDevelopment(s3Client, sqsClient, config.ScanResultQueueURL),
 		artifactURLs,
 		platform.UUIDGenerator{},
 		platform.SystemClock{},
@@ -146,6 +155,7 @@ type config struct {
 	CloudFrontBaseURL        string
 	CloudFrontKeyPairID      string
 	CloudFrontPrivateKeyFile string
+	ScanResultQueueURL       string
 	AuthMode                 string
 }
 
@@ -172,10 +182,11 @@ func loadConfig() (config, error) {
 		CloudFrontBaseURL:        os.Getenv("CLOUDFRONT_BASE_URL"),
 		CloudFrontKeyPairID:      os.Getenv("CLOUDFRONT_KEY_PAIR_ID"),
 		CloudFrontPrivateKeyFile: os.Getenv("CLOUDFRONT_PRIVATE_KEY_FILE"),
+		ScanResultQueueURL:       os.Getenv("SCAN_RESULT_QUEUE_URL"),
 		AuthMode:                 os.Getenv("AUTH_MODE"),
 	}
-	if result.DatabaseURL == "" || result.AWSRegion == "" || result.QuarantineBucket == "" || result.ArtifactBucket == "" {
-		return config{}, errors.New("DATABASE_URL, AWS_REGION, QUARANTINE_BUCKET, and ARTIFACT_BUCKET are required")
+	if result.DatabaseURL == "" || result.AWSRegion == "" || result.QuarantineBucket == "" || result.ArtifactBucket == "" || result.ScanResultQueueURL == "" {
+		return config{}, errors.New("DATABASE_URL, AWS_REGION, QUARANTINE_BUCKET, ARTIFACT_BUCKET, and SCAN_RESULT_QUEUE_URL are required")
 	}
 	if result.PlaybackURLMode == "cloudfront" && (result.CloudFrontBaseURL == "" || result.CloudFrontKeyPairID == "" || result.CloudFrontPrivateKeyFile == "") {
 		return config{}, errors.New("CloudFront playback mode requires CLOUDFRONT_BASE_URL, CLOUDFRONT_KEY_PAIR_ID, and CLOUDFRONT_PRIVATE_KEY_FILE")

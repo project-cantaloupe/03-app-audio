@@ -3,9 +3,11 @@
 ## 1. 문서 상태
 
 - 상태: MVP 구현 기준
-- 변경일: 2026-08-04
+- 변경일: 2026-08-05
 - 외부 진입 결정: ALB 직접 라우팅 대신 NLB + Istio Ingress Gateway
-- 구현 상태: 설계 반영, Terraform·Kubernetes 런타임 미적용
+- 구현 상태: 로컬 업로드→검사→변환→Signed URL→재생 artifact E2E 검증,
+  AWS Audio Terraform은 GuardDuty Protection Plan 제외 적용, Kubernetes
+  Application Runtime 미적용
 - 대상: Cantaloupe 오디오 업로드·검사·변환·재생 서비스
 - 애플리케이션 저장소: `03-app-audio`
 - Kubernetes 매니페스트 저장소: `02-k8s-manifests`
@@ -27,7 +29,7 @@
 - SQS 적체량과 Worker 처리량을 측정해 자동 확장 도입 여부를 판단한다.
 - 부하와 비용을 함께 측정할 수 있는 관측 지점을 둔다.
 - Internet-facing NLB와 Istio Ingress Gateway로 공개 HTTPS 진입점을 구성한다.
-- Gateway에서 API Canary, mTLS, 접근 정책과 HTTP 관측을 검증한다.
+- Gateway에서 stable 단일 route, mTLS, 접근 정책과 HTTP 관측을 검증한다.
 
 ### MVP 비목표
 
@@ -38,6 +40,7 @@
 - GCP·On-Prem Node에서 사용자 오디오 처리
 - GCP·On-Prem Workload까지 확장하는 멀티클러스터 Service Mesh
 - S3·SQS·RDS 같은 AWS 관리형 서비스의 Istio Mesh 편입
+- Canary 트래픽 분배와 자동 승격
 
 HLS는 MP3 기준선의 재생 품질과 비용을 측정한 뒤 비교 실험으로 추가한다.
 
@@ -98,7 +101,7 @@ spec:
 | `audio-events` | Deployment | Scan 결과·Worker 결과 소비, Outbox 발행 |
 | `audio-transcode` | Deployment, replica 1 | SQS를 long polling하고 메시지를 한 건씩 처리 |
 
-`istio-ingressgateway`는 `istio-system` Namespace의 별도 Deployment와 NodePort
+`istio-ingress`는 전용 `istio-ingress` Namespace의 별도 Deployment와 NodePort
 Service로 운영한다. Control Plane에는 Gateway와 사용자 Workload를 배치하지 않는다.
 
 ## 5. 전체 구조
@@ -175,7 +178,7 @@ TLS를 종료하지 않고 Istio Ingress Gateway의 고정 NodePort로 전달한
 Public DNS
   -> Internet-facing NLB TCP:443
   -> AWS Service Node TCP:30443
-  -> istio-ingressgateway HTTPS
+  -> istio-ingress HTTPS
   -> audio-web 또는 audio-api
 ```
 
@@ -221,7 +224,7 @@ AWS Worker를 재생성하면 instance ID가 바뀌므로 NLB Target 등록도 T
 
 공개 DNS 이름은 변경 가능한 배포 값으로 관리하고 문서에 실제 도메인을
 하드코딩하지 않는다. cert-manager는 DNS-01 방식으로 인증서를 발급하고
-`istio-system`의 TLS Secret을 갱신한다. DNS provider가 Route 53이면 cert-manager
+`istio-ingress`의 TLS Secret을 갱신한다. DNS provider가 Route 53이면 cert-manager
 ServiceAccount에는 지정 Hosted Zone의 DNS 검증 레코드에 필요한 최소 IAM 권한만
 부여한다.
 
@@ -261,21 +264,12 @@ Cognito JWT의 소유권과 도메인 권한 검증은 `audio-api`가 계속 수
 `audio-transcode`는 SQS·S3·RDS가 주요 통신 대상이므로 Sidecar를 주입하지 않고
 NetworkPolicy와 AWS IAM으로 보호한다.
 
-### Canary 원칙
+### Stable 라우팅 원칙
 
-기본 배포는 `audio-api` stable에 100%를 전달한다. Canary 실험 시 같은 Service
-뒤에 `track=stable`, `track=canary`처럼 고정된 저가변성 라벨을 가진 Deployment를
-두고 DestinationRule subset과 VirtualService weight로 트래픽을 분리한다.
-
-```text
-정상 상태: stable 100 / canary 0
-실험 시작: stable 90 / canary 10
-승격:      stable 0 / canary 100
-롤백:      stable 100 / canary 0
-```
-
-Workload 이름에는 `v2`, 날짜와 `tmp`를 넣지 않는다. Canary는 API 응답 오류율과
-p95 latency가 승인 기준을 넘으면 즉시 stable 100%로 되돌린다.
+MVP는 `audio-api`의 단일 stable Deployment에 100%를 전달한다. DestinationRule과
+VirtualService는 TLS와 단일 Backend 라우팅에만 사용하며 Canary subset과 weight를
+만들지 않는다. Workload 이름에는 `v2`, 날짜와 `tmp`를 넣지 않는다. 트래픽 분배는
+실제 버전 전환 시험이 필요해진 뒤 별도 설계와 승인으로 도입한다.
 
 ## 6. 업로드와 검사 흐름
 
@@ -739,7 +733,6 @@ ASG를 활성화하기 전에 다음 자동화가 검증되어야 한다.
 | Istio Gateway 준비 실패 | NLB health check 실패, Gateway 롤백 | 외부 API 일시 중단 |
 | 인증서 발급·갱신 실패 | 만료일 경보, 기존 Secret 유지 후 원인 복구 | 기존 인증서 유효기간 내 유지 |
 | Istio route 오류 | stable 100% 기준 설정으로 롤백 | 외부 API 일시 중단 가능 |
-| Canary 오류율·지연 초과 | Canary weight 0, stable 100% 복귀 | stable 응답 유지 |
 
 FFmpeg와 FFprobe에는 실행 시간, CPU, 메모리, 임시 디스크, 출력 크기 제한을 둔다.
 사용자가 올린 파일 이름을 shell command에 직접 보간하지 않고 argv로 전달한다.
@@ -751,7 +744,7 @@ FFmpeg와 FFprobe에는 실행 시간, CPU, 메모리, 임시 디스크, 출력 
 - API 요청 수·오류율·latency
 - NLB active flow·new flow·healthy target 수
 - Istio Gateway 요청 수·응답 코드·p50/p95 latency
-- `audio-api` stable·canary별 요청 비율과 오류율
+- `audio-api` 요청 수·오류율·p50/p95 latency
 - Istio Proxy·Gateway CPU·메모리와 재시작 횟수
 - TLS 인증서 만료까지 남은 시간
 - upload 완료율과 크기 histogram
@@ -782,7 +775,13 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 
 - GuardDuty Malware Protection for S3 Free Tier를 넘는 객체 수와 scan byte를
   Budget 경보에 포함한다.
-- 원본은 재처리 정책에 필요한 기간만 보존하고 Lifecycle로 전환·삭제한다.
+- 원본과 artifact를 서로 다른 버킷에 저장해 IAM, Lifecycle과 버킷별 저장량 측정을
+  분리한다. 버킷 분리는 측정 경계를 만들며 그 자체로 저장 비용을 줄이지 않는다.
+- `cntlp-aws-quarantine`의 128 KB 초과 원본은 0~29일 Standard, 30~59일
+  Standard-IA, 60일 이후 Glacier Instant Retrieval을 예상 기준선으로 둔다.
+- `cntlp-aws-transcode`는 사용자 재생 경로이므로 MVP에서 Lifecycle을 적용하지 않는다.
+- 실제 접근 로그와 재처리 빈도를 확인하기 전에는 Lifecycle 절감액을 예상값으로
+  표시하고 실제 AWS 청구 절감액으로 표현하지 않는다.
 - artifact는 MP3 한 rendition과 waveform 하나로 시작한다.
 - HLS segment와 320 kbps 추가 rendition은 측정 근거 없이 생성하지 않는다.
 - 자동 확장을 선택하면 KEDA와 ASG의 최대 동시 처리 수를 함께 제한한다.
@@ -806,9 +805,9 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 
 ### `01-infra-provisioning`
 
-- `terraform/aws/network`: NLB Security Group과 Worker NodePort ingress
-- `terraform/aws/edge`: Internet-facing NLB, Listener, Target Group, Target 등록과
-  Public DNS alias
+- `terraform/aws/network`: VPC와 Worker Security Group 자체
+- `terraform/aws/edge`: Internet-facing NLB, NLB Security Group, Worker NodePort
+  ingress rule, Listener, Target Group, Target 등록과 Public DNS alias
 - `terraform/aws/edge`: cert-manager DNS-01용 최소 IAM과 관련 출력
 - Edge는 Network·Compute remote state를 읽고 Worker instance ID 변경을 Target
   attachment에 반영
@@ -818,7 +817,7 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 
 ### `02-k8s-manifests`
 
-- Istio Helm chart 버전 고정, control plane과 `istio-ingressgateway` NodePort Service
+- Istio Helm chart 버전 고정, control plane과 `istio-ingress` NodePort Service
 - Istio 업그레이드 전 diff·분석과 이전 버전 rollback 절차
 - cert-manager Certificate·Issuer 참조와 TLS Secret 연결
 - Gateway, VirtualService, DestinationRule
@@ -855,6 +854,7 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 4. Python MP3·waveform Worker 작성
 5. Local PostgreSQL·S3·SQS 대체 환경에서 한 건 처리
 6. 중복 메시지와 Worker 강제 종료 시험
+7. Mock 데이터 없는 Web 앱 셸·Presigned 업로드·상태 polling 구현
 
 ### Phase 2: AWS 관리형 자원 연결
 
@@ -884,9 +884,11 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 1. NLB → Gateway → Web·API 경로와 Source IP 확인
 2. 외부 `/metrics`·`/healthz` 차단과 내부 probe 확인
 3. Gateway → Web·API mTLS와 비인가 Workload 차단 확인
-4. `audio-api` stable 90%·canary 10% 트래픽 분배 시험
-5. Canary 지연·오류 주입 후 stable 100% 롤백
-6. Istio 적용 전후 latency·CPU·메모리·OpenCost 비교
+4. 단일 Backend HTTP routing과 Source IP 전달 확인
+5. Istio 적용 전후 latency·CPU·메모리·OpenCost 비교
+
+Canary 트래픽 분배와 오류 주입은 애플리케이션 버전 전환 시험이 필요할 때 후속
+검증으로 수행한다.
 
 ### Phase 5: 자동 확장 채택 판단
 
@@ -898,11 +900,14 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 
 ### Phase 6: 부하·FinOps 실험
 
-1. MP3 기준선 측정
-2. Queue 적체와 정적 Worker 처리량 시험
-3. Worker 장애·DLQ·복구 시험
-4. 자동 확장을 선택한 경우 KEDA·ASG 비용과 복구 시험
-5. 필요할 때만 HLS 비교 구현
+1. Raw·Processed 버킷의 실제 저장량과 객체 수 측정
+2. Lifecycle 미적용·적용 장기 예상 비용과 절감률 비교
+3. MP3 기준 Worker CPU·메모리·처리시간 측정
+4. Worker requests·limits Right-sizing 전후 처리시간·실패율 비교
+5. 같은 실험 구간의 OpenCost Worker 할당 비용을 정상 완료 건수로 나눈 트랙당 비용 계산
+6. Queue 적체와 정적 Worker 처리량·장애·DLQ·복구 시험
+7. 자동 확장을 선택한 경우에만 KEDA·ASG 비용과 복구 시험
+8. 필요할 때만 HLS 비교 구현
 
 ## 22. 완료 기준
 
@@ -917,7 +922,7 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 - NLB Target health가 Gateway readiness와 일치하고 NodePort 직접 접근은 차단된다.
 - Gateway에서 `audio-web`과 `audio-api`까지 STRICT mTLS가 적용된다.
 - 비인가 ServiceAccount는 Mesh 대상 Workload에 접근하지 못한다.
-- stable 90%·canary 10% 분배와 stable 100% 롤백을 재현할 수 있다.
+- Gateway가 단일 Backend로 요청을 전달하고 mTLS·인가 정책을 적용한다.
 - API와 Worker는 GCP·On-Prem Node에 배치되지 않는다.
 - Queue가 비면 정적 Worker가 추가 작업 없이 long polling 상태를 유지한다.
 - 파일 1건 기준 처리 시간·오류·AWS 사용량을 관측할 수 있다.
@@ -962,9 +967,9 @@ Worker가 DB credential과 schema에 결합되고 Node가 늘어날수록 DB 접
 ### ALB에서 직접 애플리케이션으로 라우팅
 
 ALB는 ACM TLS 종료, 경로 라우팅과 WAF 연동을 단순하게 제공하지만 Service Mesh의
-Ingress, Canary와 mTLS 실험 경계를 ALB 뒤로 밀어낸다. 이 설계는 NLB를 L4 전달에만
-사용하고 Istio가 TLS와 L7 정책을 소유하도록 선택한다. 대신 Gateway·인증서 운영
-비용과 NLB의 AWS WAF 직접 연동 불가를 명시적인 트레이드오프로 수용한다.
+Ingress와 mTLS 정책 경계를 ALB 뒤로 밀어낸다. 이 설계는 NLB를 L4 전달에만 사용하고
+Istio가 TLS와 L7 정책을 소유하도록 선택한다. 대신 Gateway·인증서 운영 비용과
+NLB의 AWS WAF 직접 연동 불가를 명시적인 트레이드오프로 수용한다.
 
 ## 24. 참고 문서
 

@@ -1,0 +1,5 @@
+import { useSearchParams } from "react-router-dom";
+import { EmptyState } from "../components/ui/EmptyState";
+
+const views = ["liked", "playlists", "following", "history", "uploads"];
+export function LibraryPage() { const [params, setParams] = useSearchParams(); const current = params.get("view") ?? "liked"; return <div className="page-stack"><header className="page-title"><p className="eyebrow">YOUR LIBRARY</p><h1>Sounds worth returning to.</h1><p>Saved tracks and creator relationships will remain empty until their backend contracts are available.</p></header><div className="library-toolbar"><div className="tab-list" role="tablist">{views.map((view) => <button key={view} role="tab" aria-selected={view === current} onClick={() => setParams({ view })}>{view[0].toUpperCase() + view.slice(1)}</button>)}</div><input className="input" placeholder="Search within library" disabled aria-label="Search library" /></div><EmptyState title={`No ${current} here yet`} description="This view uses no generated tracks or engagement data. Content will appear after the library API is connected." /></div>; }

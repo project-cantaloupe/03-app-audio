@@ -1,0 +1,1 @@
+"""Cantaloupe audio transcode worker."""

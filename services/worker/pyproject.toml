@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cntlp-audio-worker"
+version = "0.1.0"
+description = "Cantaloupe SQS 기반 오디오 트랜스코딩 Worker"
+requires-python = ">=3.9"
+dependencies = [
+  "boto3>=1.35,<2",
+  "prometheus-client>=0.21,<1"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "ruff>=0.9,<1"
+]
+
+[project.scripts]
+audio-worker = "audio_worker.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

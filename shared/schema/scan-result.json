@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "원본 검사 결과 메시지",
+  "description": "EventBridge가 GuardDuty 결과를 정규화해 audio-events에 전달하는 계약",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "bucket",
+    "key",
+    "version_id",
+    "status",
+    "occurred_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "bucket": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 63
+    },
+    "key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "NO_THREATS_FOUND",
+        "THREATS_FOUND",
+        "UNSUPPORTED",
+        "ACCESS_DENIED",
+        "FAILED"
+      ]
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

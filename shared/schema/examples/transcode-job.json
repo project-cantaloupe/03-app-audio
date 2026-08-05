@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "event_id": "018f86f3-2a5a-7f67-a1af-12655a22694e",
+  "job_id": "018f86f3-2a5a-7f67-a1af-12655a22694f",
+  "audio_id": "018f86f3-2a5a-7f67-a1af-12655a226950",
+  "source": {
+    "bucket": "cntlp-aws-quarantine",
+    "key": "incoming/018f86f3-2a5a-7f67-a1af-12655a226950/018f86f3-2a5a-7f67-a1af-12655a226951/source",
+    "version_id": "example-version-id",
+    "checksum_sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  },
+  "targets": {
+    "mp3_bitrate_kbps": 192,
+    "waveform_points_per_second": 20
+  }
+}

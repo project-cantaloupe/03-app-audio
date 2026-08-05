@@ -1,0 +1,116 @@
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_DB: audio
+      POSTGRES_USER: audio
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audio -d audio"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  migrate:
+    image: postgres:16.4-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./services/api/migrations:/migrations:ro
+    command:
+      - psql
+      - --host=postgres
+      - --username=audio
+      - --dbname=audio
+      - --set=ON_ERROR_STOP=1
+      - --file=/migrations/001_init.sql
+
+  localstack:
+    image: localstack/localstack:3.8.1
+    environment:
+      SERVICES: s3,sqs
+      AWS_DEFAULT_REGION: ap-northeast-2
+      SQS_ENDPOINT_STRATEGY: path
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal s3api list-buckets >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "127.0.0.1:4566:4566"
+    volumes:
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh:ro
+
+  audio-api:
+    build:
+      context: ./services/api
+    environment:
+      HTTP_ADDRESS: :8080
+      AUTH_MODE: development
+      DATABASE_URL: postgres://audio@postgres:5432/audio?sslmode=disable
+      AWS_REGION: ap-northeast-2
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:4566
+      QUARANTINE_BUCKET: cntlp-aws-quarantine
+      ARTIFACT_BUCKET: cntlp-aws-transcode
+      PLAYBACK_URL_MODE: s3
+      PLAYBACK_URL_TTL_SECONDS: "10800"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  audio-events:
+    build:
+      context: ./services/api
+    entrypoint: ["/audio-events"]
+    environment:
+      HTTP_ADDRESS: :8081
+      DATABASE_URL: postgres://audio@postgres:5432/audio?sslmode=disable
+      AWS_REGION: ap-northeast-2
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+      SCAN_RESULT_QUEUE_URL: http://localstack:4566/queue/ap-northeast-2/000000000000/cntlp-aws-queue-scan-result
+      TRANSCODE_QUEUE_URL: http://localstack:4566/queue/ap-northeast-2/000000000000/cntlp-aws-queue-transcode
+      TRANSCODE_RESULT_QUEUE_URL: http://localstack:4566/queue/ap-northeast-2/000000000000/cntlp-aws-queue-transcode-result
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8081:8081"
+
+  audio-transcode:
+    build:
+      context: ./services/worker
+    environment:
+      AWS_REGION: ap-northeast-2
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+      TRANSCODE_QUEUE_URL: http://localstack:4566/queue/ap-northeast-2/000000000000/cntlp-aws-queue-transcode
+      TRANSCODE_RESULT_QUEUE_URL: http://localstack:4566/queue/ap-northeast-2/000000000000/cntlp-aws-queue-transcode-result
+      ARTIFACT_BUCKET: cntlp-aws-transcode
+      SQS_POLL_WAIT_SECONDS: "2"
+      SQS_VISIBILITY_TIMEOUT_SECONDS: "120"
+      TRANSCODE_MAXIMUM_ATTEMPTS: "3"
+    depends_on:
+      localstack:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9090:9090"
+
+volumes:
+  postgres-data:

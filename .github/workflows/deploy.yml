@@ -15,12 +15,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Tailscale VPN 연결 (K8s 내 Harbor 접근용)
+      # 2. Tailscale VPN 연결 (Auth Key 사용 방식)
       - name: Connect to Tailscale
         uses: tailscale/github-action@v2
         with:
-          oauth-client-id: ${{ secrets.TAILSCALE_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TAILSCALE_CLIENT_SECRET }}
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
 
       # 3. Docker Buildx 설정 (Insecure HTTP Harbor 허용)

@@ -28,14 +28,13 @@ jobs:
             http = true
             insecure = true
 
-    # 4. 러너 자체 Docker 데몬에 Insecure Registry 등록 (login-action 통과용)
+    # 4. 러너 자체 Docker 데몬에 Insecure Registry 등록 (안전한 스크립트 방식)
     - name: Configure Docker daemon for insecure registry
       run: |
-        sudo json=$(jq '. + {"insecure-registries": ["100.69.73.122:30080"]}' /etc/docker/daemon.json 2>/dev/null || echo '{"insecure-registries": ["100.69.73.122:30080"]}')
-        echo "$json" | sudo tee /etc/docker/daemon.json
+        echo '{"insecure-registries": ["100.69.73.122:30080"]}' | sudo tee /etc/docker/daemon.json
         sudo systemctl restart docker
 
-    # 5. Harbor 로그인 (http:// 제거된 호스트명 입력)
+    # 5. Harbor 로그인
     - name: Log in to Harbor
       uses: docker/login-action@v3
       with:

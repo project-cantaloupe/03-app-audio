@@ -22,23 +22,7 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
 
-      # 2-1. Harbor IP를 호스트 hosts 파일에 직접 등록 (Tailscale DNS 우회)
-      - name: Resolve and Map Harbor IP
-        run: |
-          HARBOR_HOST="cntlp-onp-wk-01.tail270b85.ts.net"
-          HARBOR_IP=$(tailscale ip -4 $HARBOR_HOST || getent hosts $HARBOR_HOST | awk '{ print $1 }')
-          echo "Resolved Harbor IP: $HARBOR_IP"
-          echo "$HARBOR_IP $HARBOR_HOST" | sudo tee -a /etc/hosts
-
-      # 3. Docker Buildx 설정 (network=host로 호스트의 /etc/hosts 참조)
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: |
-            network=host
-
-      # 4. Harbor Private Registry 로그인
+      # 3. Harbor Private Registry 로그인
       - name: Log in to Harbor
         uses: docker/login-action@v3
         with:
@@ -46,41 +30,23 @@ jobs:
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      # 5-1. API 서비스 빌드 & 푸시
+      # 4-1. API 서비스 빌드 & 푸시
       - name: Build and Push API Service
-        uses: docker/build-push-action@v5
-        with:
-          context: ./services/api
-          file: ./services/api/Dockerfile
-          push: true
-          no-cache: true
-          provenance: false
-          tags: |
-            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:latest
-            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:${{ github.sha }}
+        run: |
+          docker build --no-cache -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:latest -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:${{ github.sha }} -f ./services/api/Dockerfile ./services/api
+          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:latest
+          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:${{ github.sha }}
 
-      # 5-2. Web 서비스 빌드 & 푸시
+      # 4-2. Web 서비스 빌드 & 푸시
       - name: Build and Push Web Service
-        uses: docker/build-push-action@v5
-        with:
-          context: ./services/web
-          file: ./services/web/Dockerfile
-          push: true
-          no-cache: true
-          provenance: false
-          tags: |
-            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:latest
-            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:${{ github.sha }}
+        run: |
+          docker build --no-cache -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:latest -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:${{ github.sha }} -f ./services/web/Dockerfile ./services/web
+          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:latest
+          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:${{ github.sha }}
 
-      # 5-3. Worker 서비스 빌드 & 푸시
+      # 4-3. Worker 서비스 빌드 & 푸시
       - name: Build and Push Worker Service
-        uses: docker/build-push-action@v5
-        with:
-          context: ./services/worker
-          file: ./services/worker/Dockerfile
-          push: true
-          no-cache: true
-          provenance: false
-          tags: |
-            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:latest
-            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:${{ github.sha }}
+        run: |
+          docker build --no-cache -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:latest -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:${{ github.sha }} -f ./services/worker/Dockerfile ./services/worker
+          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:latest
+          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:${{ github.sha }}

@@ -22,13 +22,23 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
 
-      # 3. Docker Buildx 설정 (Tailscale 네트워크 공유 설정 추가)
+      # 2-1. Harbor 서버 IP 추출
+      - name: Resolve Harbor IP
+        id: harbor-ip
+        run: |
+          HARBOR_HOST="cntlp-onp-wk-01.tail270b85.ts.net"
+          HARBOR_IP=$(tailscale ip -4 $HARBOR_HOST || getent hosts $HARBOR_HOST | awk '{ print $1 }')
+          echo "Resolved Harbor IP: $HARBOR_IP"
+          echo "ip=$HARBOR_IP" >> $GITHUB_OUTPUT
+
+      # 3. Docker Buildx 설정
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           driver: docker-container
           driver-opts: |
             network=host
+            extra-hosts=cntlp-onp-wk-01.tail270b85.ts.net:${{ steps.harbor-ip.outputs.ip }}
 
       # 4. Harbor Private Registry 로그인
       - name: Log in to Harbor
@@ -45,6 +55,7 @@ jobs:
           context: ./services/api
           file: ./services/api/Dockerfile
           push: true
+          no-cache: true  # 👈 강제 푸시를 위해 캐시 비활성화
           provenance: false
           tags: |
             cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:latest
@@ -57,6 +68,7 @@ jobs:
           context: ./services/web
           file: ./services/web/Dockerfile
           push: true
+          no-cache: true  # 👈 강제 푸시를 위해 캐시 비활성화
           provenance: false
           tags: |
             cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:latest
@@ -69,6 +81,7 @@ jobs:
           context: ./services/worker
           file: ./services/worker/Dockerfile
           push: true
+          no-cache: true  # 👈 강제 푸시를 위해 캐시 비활성화
           provenance: false
           tags: |
             cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:latest

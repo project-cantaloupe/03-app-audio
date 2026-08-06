@@ -56,8 +56,8 @@ jobs:
             sleep 3
           done
           
-          # 4) -p 옵션 직접 전달로 특수문자 변형 방지
-          docker login ${{ env.HARBOR_REGISTRY }} -u "$HARBOR_USER" -p "$HARBOR_PASS"
+          # 4) --password-stdin 방식으로 보안 경고 해결 및 특수문자 파싱 오류 차단
+          echo "$HARBOR_PASS" | docker login ${{ env.HARBOR_REGISTRY }} -u "$HARBOR_USER" --password-stdin
 
       # 4-1. API 서비스 빌드 및 푸시
       - name: Build and Push API Service

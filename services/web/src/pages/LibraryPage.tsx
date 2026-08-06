@@ -6,7 +6,10 @@ import { listAudios, trackKeys } from "../services/trackService";
 import type { AudioRecord, AudioStatus } from "../types/audio";
 import { formatTime } from "../utils/time";
 
-const views = ["liked", "playlists", "following", "history", "uploads"];
+// Uploads가 유일하게 백엔드에 연결된 탭이므로 맨 앞에 두고 기본값으로 쓴다.
+// 빈 탭이 먼저 보이면 업로드한 트랙이 없는 것으로 오해하게 된다.
+const views = ["uploads", "liked", "playlists", "following", "history"];
+const defaultView = views[0];
 
 // 처리 중인 트랙도 목록에 온다. 업로드 직후 상태가 보이지 않으면 사용자는
 // 업로드가 실패했다고 판단한다.
@@ -106,7 +109,7 @@ function Uploads() {
 
 export function LibraryPage() {
   const [params, setParams] = useSearchParams();
-  const current = params.get("view") ?? "liked";
+  const current = params.get("view") ?? defaultView;
   return (
     <div className="page-stack">
       <header className="page-title">

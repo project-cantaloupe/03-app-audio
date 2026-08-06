@@ -13,6 +13,7 @@ import (
 type Repository interface {
 	CreateUpload(context.Context, Audio) error
 	GetAudio(context.Context, string) (Audio, error)
+	ListAudiosByOwner(context.Context, string, int, *ListCursor) ([]Audio, error)
 	MarkUploadVerified(context.Context, string, SourceObject, string, string, time.Time) (Audio, error)
 }
 
@@ -165,6 +166,74 @@ func (s *Service) CompleteUpload(ctx context.Context, ownerSubject, audioID stri
 		return Audio{}, fmt.Errorf("mark upload verified: %w", err)
 	}
 	return updated, nil
+}
+
+// ListAudios는 소유자 본인의 트랙만 최신순으로 돌려준다. 공개 피드가 아니다.
+//
+// 처리 중인 트랙도 함께 반환한다. 업로드 직후 SCANNING 상태가 목록에서 사라지면
+// 사용자는 업로드가 실패했다고 판단하게 된다.
+func (s *Service) ListAudios(ctx context.Context, input ListAudiosInput) (AudioPage, error) {
+	if strings.TrimSpace(input.OwnerSubject) == "" {
+		return AudioPage{}, ErrUnauthorized
+	}
+
+	limit := input.Limit
+	switch {
+	case limit <= 0:
+		limit = DefaultListLimit
+	case limit > MaxListLimit:
+		limit = MaxListLimit
+	}
+
+	cursor, err := decodeListCursor(input.Cursor)
+	if err != nil {
+		return AudioPage{}, err
+	}
+
+	// 한 건 더 읽어 다음 페이지 존재 여부를 판단한다. 별도 COUNT 쿼리를 돌리면
+	// 그 사이에 행이 추가돼 결과가 어긋날 수 있다.
+	records, err := s.repository.ListAudiosByOwner(ctx, input.OwnerSubject, limit+1, cursor)
+	if err != nil {
+		return AudioPage{}, err
+	}
+
+	page := AudioPage{Items: records}
+	if len(records) > limit {
+		page.Items = records[:limit]
+		last := page.Items[len(page.Items)-1]
+		page.NextCursor = encodeListCursor(ListCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+	}
+	// 빈 목록도 null이 아니라 []로 직렬화한다. 클라이언트가 분기하지 않게 한다.
+	if page.Items == nil {
+		page.Items = []Audio{}
+	}
+	return page, nil
+}
+
+// 커서는 클라이언트에게 불투명한 값이다. 정렬 기준이 바뀌어도 클라이언트를
+// 고치지 않도록 내부 형식을 노출하지 않는다.
+func encodeListCursor(cursor ListCursor) string {
+	raw := cursor.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + cursor.ID
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeListCursor(value string) (*ListCursor, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("%w: cursor is not valid", ErrInvalidInput)
+	}
+	parts := strings.SplitN(string(decoded), "|", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return nil, fmt.Errorf("%w: cursor is not valid", ErrInvalidInput)
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("%w: cursor is not valid", ErrInvalidInput)
+	}
+	return &ListCursor{CreatedAt: createdAt, ID: parts[1]}, nil
 }
 
 func (s *Service) GetAudio(ctx context.Context, subject, audioID string) (Audio, error) {

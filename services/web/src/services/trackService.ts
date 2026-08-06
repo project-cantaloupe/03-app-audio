@@ -1,14 +1,25 @@
 import { apiRequest } from "./apiClient";
-import type { AudioRecord, PlaybackAccess, Track, WaveformData } from "../types/audio";
+import type { AudioPage, AudioRecord, PlaybackAccess, Track, WaveformData } from "../types/audio";
 
 export const trackKeys = {
   detail: (audioId: string) => ["audio", audioId] as const,
   playback: (audioId: string) => ["audio", audioId, "playback"] as const,
   waveform: (audioId: string, expiresAt: string) => ["audio", audioId, "waveform", expiresAt] as const,
+  list: () => ["audios"] as const,
 };
 
 export function getAudio(audioId: string) {
   return apiRequest<AudioRecord>(`/v1/audios/${encodeURIComponent(audioId)}`);
+}
+
+// 본인이 올린 트랙만 최신순으로 돌려준다. 공개 피드가 아니다.
+// 처리 중인 트랙도 함께 오므로 목록에서 진행 상태를 볼 수 있다.
+export function listAudios(params: { limit?: number; cursor?: string } = {}) {
+  const query = new URLSearchParams();
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.cursor) query.set("cursor", params.cursor);
+  const suffix = query.toString();
+  return apiRequest<AudioPage>(`/v1/audios${suffix ? `?${suffix}` : ""}`);
 }
 
 export function getPlayback(audioId: string) {

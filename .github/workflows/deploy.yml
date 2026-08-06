@@ -7,9 +7,7 @@ on:
     branches: [ "main", "master" ]
 
 env:
-  # Harbor 레지스트리의 NodePort(:31432)
   HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net:31432
-  # 사용하시는 Harbor 프로젝트 이름 (필요 시 library -> devops 등으로 변경)
   HARBOR_PROJECT: library
 
 jobs:
@@ -17,29 +15,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 저장소 소스코드 체크아웃
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Tailscale VPN 연결
       - name: Connect to Tailscale
         uses: tailscale/github-action@v2
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
 
-      # 3. Docker Daemon Insecure 설정 및 CLI 로그인 (통합)
       - name: Configure Docker & Log in to Harbor
+        env:
+          HARBOR_USER: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASS: ${{ secrets.HARBOR_PASSWORD }}
         run: |
-          # Insecure Registry 설정
           sudo mkdir -p /etc/docker
           echo '{"insecure-registries": ["'${{ env.HARBOR_REGISTRY }}'"]}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
           
-          # CLI 직접 로그인 (401 에러 방지)
-          echo "${{ secrets.HARBOR_PASSWORD }}" | docker login ${{ env.HARBOR_REGISTRY }} -u "${{ secrets.HARBOR_USERNAME }}" --password-stdin
+          printf "%s" "$HARBOR_PASS" | docker login ${{ env.HARBOR_REGISTRY }} -u "$HARBOR_USER" --password-stdin
 
-      # 4-1. API 서비스 빌드 & 푸시
       - name: Build and Push API Service
         run: |
           docker build \
@@ -48,7 +43,6 @@ jobs:
             -f ./services/api/Dockerfile ./services/api
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api --all-tags
 
-      # 4-2. Web 서비스 빌드 & 푸시
       - name: Build and Push Web Service
         run: |
           docker build \
@@ -57,7 +51,6 @@ jobs:
             -f ./services/web/Dockerfile ./services/web
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web --all-tags
 
-      # 4-3. Worker 서비스 빌드 & 푸시
       - name: Build and Push Worker Service
         run: |
           docker build \

@@ -7,8 +7,10 @@ on:
     branches: [ "main", "master" ]
 
 env:
-  # Harbor 레지스트리의 NodePort(:31432)를 명시
+  # Harbor 레지스트리의 NodePort(:31432)
   HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net:31432
+  # 사용하시는 Harbor 프로젝트 이름 (필요 시 library -> devops 등으로 변경)
+  HARBOR_PROJECT: library
 
 jobs:
   build-and-push:
@@ -26,14 +28,11 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
 
-      # 3. Docker Daemon에 Insecure Registry(HTTP) 등록
-      #    (:31432 포트가 HTTP 통신이므로 반드시 필요)
+      # 3. Docker Daemon에 Insecure Registry(HTTP) 안전하게 등록
       - name: Configure Insecure Registry for Docker
         run: |
-          sudo bash -c '
-            mkdir -p /etc/docker
-            echo "{\"insecure-registries\": [\"${{ env.HARBOR_REGISTRY }}\"]}" > /etc/docker/daemon.json
-          '
+          sudo mkdir -p /etc/docker
+          echo '{"insecure-registries": ["'${{ env.HARBOR_REGISTRY }}'"]}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
 
       # 4. Harbor Private Registry 로그인
@@ -47,29 +46,26 @@ jobs:
       # 5-1. API 서비스 빌드 & 푸시
       - name: Build and Push API Service
         run: |
-          docker build --no-cache \
-            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-api:latest \
-            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-api:${{ github.sha }} \
+          docker build \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }} \
             -f ./services/api/Dockerfile ./services/api
-          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-api:latest
-          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-api:${{ github.sha }}
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api --all-tags
 
       # 5-2. Web 서비스 빌드 & 푸시
       - name: Build and Push Web Service
         run: |
-          docker build --no-cache \
-            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-web:latest \
-            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-web:${{ github.sha }} \
+          docker build \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web:${{ github.sha }} \
             -f ./services/web/Dockerfile ./services/web
-          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-web:latest
-          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-web:${{ github.sha }}
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web --all-tags
 
       # 5-3. Worker 서비스 빌드 & 푸시
       - name: Build and Push Worker Service
         run: |
-          docker build --no-cache \
-            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-worker:latest \
-            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-worker:${{ github.sha }} \
+          docker build \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker:${{ github.sha }} \
             -f ./services/worker/Dockerfile ./services/worker
-          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-worker:latest
-          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-worker:${{ github.sha }}
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker --all-tags

@@ -28,22 +28,18 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
 
-      # 3. Docker Daemon에 Insecure Registry(HTTP) 안전하게 등록
-      - name: Configure Insecure Registry for Docker
+      # 3. Docker Daemon Insecure 설정 및 CLI 로그인 (통합)
+      - name: Configure Docker & Log in to Harbor
         run: |
+          # Insecure Registry 설정
           sudo mkdir -p /etc/docker
           echo '{"insecure-registries": ["'${{ env.HARBOR_REGISTRY }}'"]}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
+          
+          # CLI 직접 로그인 (401 에러 방지)
+          echo "${{ secrets.HARBOR_PASSWORD }}" | docker login ${{ env.HARBOR_REGISTRY }} -u "${{ secrets.HARBOR_USERNAME }}" --password-stdin
 
-      # 4. Harbor Private Registry 로그인
-      - name: Log in to Harbor
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.HARBOR_REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
-
-      # 5-1. API 서비스 빌드 & 푸시
+      # 4-1. API 서비스 빌드 & 푸시
       - name: Build and Push API Service
         run: |
           docker build \
@@ -52,7 +48,7 @@ jobs:
             -f ./services/api/Dockerfile ./services/api
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api --all-tags
 
-      # 5-2. Web 서비스 빌드 & 푸시
+      # 4-2. Web 서비스 빌드 & 푸시
       - name: Build and Push Web Service
         run: |
           docker build \
@@ -61,7 +57,7 @@ jobs:
             -f ./services/web/Dockerfile ./services/web
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web --all-tags
 
-      # 5-3. Worker 서비스 빌드 & 푸시
+      # 4-3. Worker 서비스 빌드 & 푸시
       - name: Build and Push Worker Service
         run: |
           docker build \
@@ -69,3 +65,10 @@ jobs:
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker:${{ github.sha }} \
             -f ./services/worker/Dockerfile ./services/worker
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker --all-tags
+
+      # 5. (선택사항) 쿠버네티스 클러스터 배포
+      - name: Deploy to Kubernetes
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          # deploy.yaml 파일이 프로젝트 내에 위치할 경우 실행
+          kubectl apply -f deploy.yaml --kubeconfig <(echo "${{ secrets.KUBECONFIG }}")

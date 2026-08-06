@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/project-cantaloupe/app-audio/services/api/internal/audio"
@@ -25,6 +26,7 @@ func New(service *audio.Service, probe *health.Probe, logger *log.Logger) http.H
 	mux.HandleFunc("GET /readyz", h.ready)
 	mux.HandleFunc("POST /v1/audios/uploads", h.createUpload)
 	mux.HandleFunc("POST /v1/audios/{audio_id}/complete", h.completeUpload)
+	mux.HandleFunc("GET /v1/audios", h.listAudios)
 	mux.HandleFunc("GET /v1/audios/{audio_id}", h.getAudio)
 	mux.HandleFunc("GET /v1/audios/{audio_id}/playback", h.getPlayback)
 	return requestLog(logger, mux)
@@ -56,6 +58,29 @@ func (h *Handler) createUpload(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request) {
 	result, err := h.service.CompleteUpload(r.Context(), subject(r), r.PathValue("audio_id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) listAudios(w http.ResponseWriter, r *http.Request) {
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "limit must be a positive integer")
+			return
+		}
+		limit = parsed
+	}
+
+	result, err := h.service.ListAudios(r.Context(), audio.ListAudiosInput{
+		OwnerSubject: subject(r),
+		Limit:        limit,
+		Cursor:       r.URL.Query().Get("cursor"),
+	})
 	if err != nil {
 		writeServiceError(w, err)
 		return

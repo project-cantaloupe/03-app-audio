@@ -23,6 +23,12 @@ export type AudioRecord = {
   updated_at: string;
 };
 
+// next_cursor가 없으면 마지막 페이지다. 커서는 불투명한 값이므로 파싱하지 않는다.
+export type AudioPage = {
+  items: AudioRecord[];
+  next_cursor?: string;
+};
+
 export type PlaybackAccess = {
   audio_id: string;
   playback_url: string;

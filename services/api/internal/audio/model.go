@@ -65,6 +65,33 @@ type CreateUploadOutput struct {
 	ExpiresAt     time.Time         `json:"expires_at"`
 }
 
+// 목록 조회의 기본값과 상한이다. audios_owner_created_idx가 소유자별 최신순을
+// 받쳐주므로 정렬은 (created_at DESC, id DESC)로 고정한다.
+const (
+	DefaultListLimit = 20
+	MaxListLimit     = 100
+)
+
+// ListCursor는 Keyset Pagination의 기준점이다. OFFSET을 쓰지 않는 이유는
+// 목록을 넘기는 도중에 새 업로드가 들어오면 행이 밀려 중복·누락이 생기기
+// 때문이다. 마지막으로 본 행을 기준으로 잡으면 그 문제가 없다.
+type ListCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+type ListAudiosInput struct {
+	OwnerSubject string
+	Limit        int
+	Cursor       string
+}
+
+// NextCursor가 비어 있으면 마지막 페이지다.
+type AudioPage struct {
+	Items      []Audio `json:"items"`
+	NextCursor string  `json:"next_cursor,omitempty"`
+}
+
 type PlaybackAccess struct {
 	AudioID     string    `json:"audio_id"`
 	PlaybackURL string    `json:"playback_url"`

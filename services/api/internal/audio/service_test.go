@@ -8,7 +8,15 @@ import (
 	"time"
 )
 
-type fakeRepository struct{ record Audio }
+type fakeRepository struct {
+	record Audio
+
+	// 목록 조회용. listResult를 그대로 돌려주고 받은 인자를 기록한다.
+	listResult []Audio
+	listOwner  string
+	listLimit  int
+	listCursor *ListCursor
+}
 
 func (f *fakeRepository) CreateUpload(_ context.Context, record Audio) error {
 	f.record = record
@@ -19,6 +27,13 @@ func (f *fakeRepository) GetAudio(_ context.Context, id string) (Audio, error) {
 		return Audio{}, ErrNotFound
 	}
 	return f.record, nil
+}
+func (f *fakeRepository) ListAudiosByOwner(_ context.Context, owner string, limit int, after *ListCursor) ([]Audio, error) {
+	f.listOwner, f.listLimit, f.listCursor = owner, limit, after
+	if len(f.listResult) > limit {
+		return f.listResult[:limit], nil
+	}
+	return f.listResult, nil
 }
 func (f *fakeRepository) MarkUploadVerified(_ context.Context, _ string, object SourceObject, _, _ string, now time.Time) (Audio, error) {
 	f.record.UploadVerified = true
@@ -242,5 +257,128 @@ func TestGetPlaybackRejectsAudioBeforeReady(t *testing.T) {
 	_, err := service.GetPlayback(context.Background(), "owner", "audio-id")
 	if !errors.Is(err, ErrNotReady) {
 		t.Fatalf("expected ErrNotReady, got %v", err)
+	}
+}
+
+func listService(repository *fakeRepository) *Service {
+	return NewService(repository, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{},
+		&sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+}
+
+func TestListAudiosRequiresSubject(t *testing.T) {
+	_, err := listService(&fakeRepository{}).ListAudios(context.Background(), ListAudiosInput{})
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
+	}
+}
+
+// 다음 페이지 존재 여부를 알려면 요청한 개수보다 한 건 더 읽어야 한다.
+func TestListAudiosReadsOneExtraRowToDetectNextPage(t *testing.T) {
+	repository := &fakeRepository{}
+	if _, err := listService(repository).ListAudios(context.Background(), ListAudiosInput{
+		OwnerSubject: "owner", Limit: 5,
+	}); err != nil {
+		t.Fatalf("ListAudios() error = %v", err)
+	}
+	if repository.listLimit != 6 {
+		t.Fatalf("expected limit 6, got %d", repository.listLimit)
+	}
+	if repository.listOwner != "owner" {
+		t.Fatalf("expected owner scope, got %q", repository.listOwner)
+	}
+}
+
+func TestListAudiosClampsLimit(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{
+		{in: 0, want: DefaultListLimit + 1},
+		{in: -3, want: DefaultListLimit + 1},
+		{in: MaxListLimit + 50, want: MaxListLimit + 1},
+	} {
+		repository := &fakeRepository{}
+		if _, err := listService(repository).ListAudios(context.Background(), ListAudiosInput{
+			OwnerSubject: "owner", Limit: tc.in,
+		}); err != nil {
+			t.Fatalf("ListAudios() error = %v", err)
+		}
+		if repository.listLimit != tc.want {
+			t.Fatalf("limit %d: expected %d, got %d", tc.in, tc.want, repository.listLimit)
+		}
+	}
+}
+
+// 마지막 페이지에서 커서를 주면 클라이언트가 빈 페이지를 한 번 더 요청한다.
+func TestListAudiosOmitsCursorOnLastPage(t *testing.T) {
+	repository := &fakeRepository{listResult: []Audio{{ID: "a"}, {ID: "b"}}}
+	page, err := listService(repository).ListAudios(context.Background(), ListAudiosInput{
+		OwnerSubject: "owner", Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("ListAudios() error = %v", err)
+	}
+	if page.NextCursor != "" {
+		t.Fatalf("expected no cursor, got %q", page.NextCursor)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(page.Items))
+	}
+}
+
+func TestListAudiosReturnsCursorWhenMoreRemain(t *testing.T) {
+	now := time.Date(2026, 8, 6, 9, 0, 0, 0, time.UTC)
+	repository := &fakeRepository{listResult: []Audio{
+		{ID: "a", CreatedAt: now}, {ID: "b", CreatedAt: now.Add(-time.Minute)},
+		{ID: "c", CreatedAt: now.Add(-2 * time.Minute)},
+	}}
+	service := listService(repository)
+
+	page, err := service.ListAudios(context.Background(), ListAudiosInput{OwnerSubject: "owner", Limit: 2})
+	if err != nil {
+		t.Fatalf("ListAudios() error = %v", err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(page.Items))
+	}
+	if page.NextCursor == "" {
+		t.Fatal("expected a cursor when more rows remain")
+	}
+
+	// 그 커서로 다시 요청하면 마지막으로 본 행이 기준점이 되어야 한다.
+	if _, err := service.ListAudios(context.Background(), ListAudiosInput{
+		OwnerSubject: "owner", Limit: 2, Cursor: page.NextCursor,
+	}); err != nil {
+		t.Fatalf("ListAudios() error = %v", err)
+	}
+	if repository.listCursor == nil {
+		t.Fatal("expected the cursor to reach the repository")
+	}
+	if repository.listCursor.ID != "b" {
+		t.Fatalf("expected cursor at last returned row, got %q", repository.listCursor.ID)
+	}
+	if !repository.listCursor.CreatedAt.Equal(now.Add(-time.Minute)) {
+		t.Fatalf("unexpected cursor timestamp: %s", repository.listCursor.CreatedAt)
+	}
+}
+
+func TestListAudiosRejectsMalformedCursor(t *testing.T) {
+	for _, cursor := range []string{"not-base64!!", "YWJj", "fGlk"} {
+		_, err := listService(&fakeRepository{}).ListAudios(context.Background(), ListAudiosInput{
+			OwnerSubject: "owner", Cursor: cursor,
+		})
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("cursor %q: expected ErrInvalidInput, got %v", cursor, err)
+		}
+	}
+}
+
+// 빈 결과가 null로 직렬화되면 클라이언트가 분기해야 한다.
+func TestListAudiosReturnsEmptySliceNotNil(t *testing.T) {
+	page, err := listService(&fakeRepository{}).ListAudios(context.Background(), ListAudiosInput{
+		OwnerSubject: "owner",
+	})
+	if err != nil {
+		t.Fatalf("ListAudios() error = %v", err)
+	}
+	if page.Items == nil {
+		t.Fatal("expected an empty slice, got nil")
 	}
 }

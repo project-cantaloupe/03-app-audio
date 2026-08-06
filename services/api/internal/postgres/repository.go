@@ -45,6 +45,45 @@ func (r *Repository) GetAudio(ctx context.Context, id string) (audio.Audio, erro
 	return record, err
 }
 
+// 정렬과 WHERE 절이 audios_owner_created_idx (owner_subject, created_at DESC)
+// WHERE deleted_at IS NULL 과 일치한다.
+//
+// 행 비교 (created_at, id) < ($2, $3) 는 두 값을 사전순으로 함께 비교한다.
+// created_at 만으로 자르면 같은 시각에 만들어진 행이 누락되거나 반복된다.
+func (r *Repository) ListAudiosByOwner(
+	ctx context.Context, ownerSubject string, limit int, after *audio.ListCursor,
+) ([]audio.Audio, error) {
+	var createdAt any
+	var id any
+	if after != nil {
+		createdAt = after.CreatedAt
+		id = after.ID
+	}
+
+	rows, err := r.pool.Query(ctx, selectAudio+`
+		WHERE owner_subject = $1
+			AND deleted_at IS NULL
+			AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3))
+		ORDER BY created_at DESC, id DESC
+		LIMIT $4`,
+		ownerSubject, createdAt, id, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := make([]audio.Audio, 0, limit)
+	for rows.Next() {
+		record, err := scanAudio(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
 func (r *Repository) MarkUploadVerified(ctx context.Context, id string, object audio.SourceObject, jobID, eventID string, now time.Time) (audio.Audio, error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

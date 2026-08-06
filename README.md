@@ -26,20 +26,30 @@ shared/schema/     api 와 worker 가 주고받는 메시지 형식
 
 ## 빌드 시 흐름
 
+`main` 푸시마다 GitHub Actions가 세 서비스를 빌드해 Harbor로 푸시한다.
+
 ```
-푸시 → Jenkins 빌드 → 이미지 푸시 → k8s-manifests 에 PR → auto-merge → ArgoCD 배포
+푸시 → GitHub Actions → Harbor (cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-*)
 ```
 
-**Jenkins 는 매니페스트에 직접 푸시하지 않고 PR 을 연다.** 직접 푸시하려면 브랜치
-보호를 우회해야 하는데, 우회 권한은 경로를 가리지 않는다. 그러면 봇이
-`governance/` 도 고칠 수 있게 된다.
+**클러스터가 받는 이미지는 아직 이 경로가 아니다.** `02-k8s-manifests/apps/audio`는
+GHCR을 가리킨다.
 
-Jenkins agent의 `onp-devops`는 Kubernetes `area` 라벨이 아니라 Jenkins가
-관리하는 실행기 라벨이다. 해당 실행기는 On-prem DevOps 환경에 둔다.
+```
+CI가 푸시    …ts.net/library/app-audio-{api,web,worker}
+k8s가 pull   ghcr.io/project-cantaloupe/audio-{api,web,worker}:dev
+```
 
-각 서비스의 Dockerfile과 `02-k8s-manifests/apps/audio/{api,worker,web}` 이미지
-Kustomization이 함께 준비된 뒤 파이프라인을 활성화한다. 현재 파이프라인은 아직
-활성화하지 않는다.
+레지스트리와 이미지 이름이 모두 달라서, 현재 배포에 반영하려면 GHCR로 직접
+빌드·푸시해야 한다.
+
+```bash
+docker buildx build --platform linux/amd64 \
+  -t ghcr.io/project-cantaloupe/audio-api:dev --push services/api
+```
+
+매니페스트의 `imagePullPolicy`가 `Always`이므로 푸시 후 `rollout restart`로
+새 이미지를 받는다.
 
 ## 현재 구현 범위
 
@@ -51,19 +61,60 @@ Kustomization이 함께 준비된 뒤 파이프라인을 활성화한다. 현재
 - `audio-web`: 단일 시네마틱 랜딩, 실제 Presigned 업로드, 처리 상태 polling, MP3 재생과 사전 생성 waveform 표시
 - `audio-api`: READY·소유권 확인 후 MP3와 waveform 만료 URL 발급
 - 로컬 S3 Presigned GET과 운영 CloudFront SHA-256 Signed URL을 같은 서명 경계로 분리
+- CloudFront signing private key를 Kubernetes Secret으로 mount하고 API 환경 변수와 연결
 - PostgreSQL 초기 스키마와 SQS 메시지 계약
 - PostgreSQL·LocalStack을 사용하는 로컬 실행 구성
+- Kubernetes 배포 매니페스트 (`02-k8s-manifests/apps/audio`)
 
 아직 구현하지 않은 경계는 다음과 같다.
 
-- Cognito JWT 검증. 현재 `AUTH_MODE=development`에서만 개발용 subject header 사용
-- CloudFront signing private key의 Kubernetes Secret mount와 API 환경 변수 연결
+- Keycloak OIDC 검증. 현재 `AUTH_MODE=development`에서만 개발용 subject header 사용
 - 목록·검색·Creator·Playlist API와 해당 화면의 실제 데이터
-- 실제 악성코드 검사기와 AWS Audio 데이터 경로 E2E 검증
-- Kubernetes 배포 매니페스트
+- 실제 악성코드 검사기
 
-`01-infra-provisioning`의 S3, SQS와 CloudFront는 적용됐다. 이 상태는 AWS Resource
-준비를 의미하며 Application의 실제 AWS 통합 검증을 의미하지 않는다.
+`01-infra-provisioning`의 S3, SQS와 CloudFront는 적용됐다.
+
+## AWS 데이터 경로 E2E
+
+2026-08-06에 `https://audio.echoprism.cloud`로 전 구간을 통과시켰다.
+
+```
+업로드 URL 발급 → S3 PUT → complete → 스캔 → 변환 → 재생 URL → CloudFront 수신
+```
+
+산출물은 `targets` 지시값과 일치했다.
+
+```
+playback.mp3    MPEG layer III, 192 kbps, 44.1 kHz   (mp3_bitrate_kbps=192)
+waveform.json   duration_ms=3000, points_per_second=20
+서명 없는 접근    403
+```
+
+## 업로드 무결성 검증 위치
+
+**SHA-256 대조는 `audio-transcode`가 한다.** `/complete`가 아니다.
+
+Presigned URL에 체크섬을 넣으면 SigV4 서명 과정에서 `x-amz-checksum-sha256`이
+쿼리스트링으로 옮겨진다. 그러면 두 경로 모두 막힌다.
+
+```
+헤더로 보냄   S3가 403. 서명되지 않은 x-amz-* 헤더는 거부된다
+헤더를 뺌     업로드는 되지만 S3가 SHA-256을 기록하지 않는다
+```
+
+그래서 각 단계가 확인할 수 있는 것만 확인한다.
+
+```
+/complete           크기, Content-Type, S3 Version
+audio-transcode     내려받은 바이트로 SHA-256 계산 후 대조
+                    불일치 시 SOURCE_CHECKSUM_MISMATCH (재시도 안 함)
+```
+
+워커는 FFmpeg를 위해 원본 전체를 이미 내려받으므로 추가 전송 비용이 없다.
+큰 파일에서 메모리를 쓰지 않도록 1 MiB 단위로 스트리밍해 해시한다.
+
+클라이언트는 지금도 업로드 요청에 `checksum_sha256`을 담아 보낸다. 그 값이
+DB에 저장돼 변환 작업 메시지로 전달되고, 워커가 그것과 대조한다.
 
 현재 악성코드 검사기는 없다. `audio-api`의 개발용 Scan Adapter는 `/complete`에서
 정확한 S3 Version을 검증한 뒤 `CntlpScanStatus=NO_THREATS_FOUND` 태그와

@@ -22,19 +22,15 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
 
-      # 3. Docker Buildx 설정
+      # 3. Docker Buildx 기본 설정 (복잡한 옵션 모두 제거)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: |
-            network=host
 
-      # 4. Harbor Private Registry 로그인 (443 포트 명시)
+      # 4. Harbor Private Registry 로그인 (표준 HTTPS 사용)
       - name: Log in to Harbor
         uses: docker/login-action@v3
         with:
-          registry: cntlp-onp-wk-01.tail270b85.ts.net:443
+          registry: cntlp-onp-wk-01.tail270b85.ts.net
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
@@ -47,8 +43,8 @@ jobs:
           push: true
           provenance: false
           tags: |
-            cntlp-onp-wk-01.tail270b85.ts.net:443/library/app-audio-api:latest
-            cntlp-onp-wk-01.tail270b85.ts.net:443/library/app-audio-api:${{ github.sha }}
+            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:latest
+            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:${{ github.sha }}
 
       # 5-2. Web 서비스 빌드 & 푸시
       - name: Build and Push Web Service
@@ -59,8 +55,8 @@ jobs:
           push: true
           provenance: false
           tags: |
-            cntlp-onp-wk-01.tail270b85.ts.net:443/library/app-audio-web:latest
-            cntlp-onp-wk-01.tail270b85.ts.net:443/library/app-audio-web:${{ github.sha }}
+            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:latest
+            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:${{ github.sha }}
 
       # 5-3. Worker 서비스 빌드 & 푸시
       - name: Build and Push Worker Service
@@ -71,5 +67,5 @@ jobs:
           push: true
           provenance: false
           tags: |
-            cntlp-onp-wk-01.tail270b85.ts.net:443/library/app-audio-worker:latest
-            cntlp-onp-wk-01.tail270b85.ts.net:443/library/app-audio-worker:${{ github.sha }}
+            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:latest
+            cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:${{ github.sha }}

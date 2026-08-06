@@ -78,9 +78,3 @@ jobs:
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker:${{ github.sha }} \
             -f ./services/worker/Dockerfile ./services/worker
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker --all-tags
-
-      # 5. 쿠버네티스 배포 (Main/Master 브랜치만 실행)
-      - name: Deploy to Kubernetes
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        run: |
-          kubectl apply -f deploy.yaml --kubeconfig <(echo "${{ secrets.KUBECONFIG }}")

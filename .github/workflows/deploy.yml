@@ -15,15 +15,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. 저장소 소스코드 체크아웃
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # 2. Tailscale VPN 연결 (v3 최신 버전 적용으로 멈춤 현상 해결)
       - name: Connect to Tailscale
-        uses: tailscale/github-action@v2
+        uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
+          hostname: github-runner-${{ github.run_id }}
 
+      # 3. Docker Insecure 설정 및 CLI 안정 로그인 (개행/특수문자 이슈 방지)
       - name: Configure Docker & Log in to Harbor
         env:
           HARBOR_USER: ${{ secrets.HARBOR_USERNAME }}
@@ -35,6 +39,7 @@ jobs:
           
           printf "%s" "$HARBOR_PASS" | docker login ${{ env.HARBOR_REGISTRY }} -u "$HARBOR_USER" --password-stdin
 
+      # 4-1. API 서비스 빌드 및 푸시
       - name: Build and Push API Service
         run: |
           docker build \
@@ -43,6 +48,7 @@ jobs:
             -f ./services/api/Dockerfile ./services/api
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api --all-tags
 
+      # 4-2. Web 서비스 빌드 및 푸시
       - name: Build and Push Web Service
         run: |
           docker build \
@@ -51,6 +57,7 @@ jobs:
             -f ./services/web/Dockerfile ./services/web
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web --all-tags
 
+      # 4-3. Worker 서비스 빌드 및 푸시
       - name: Build and Push Worker Service
         run: |
           docker build \
@@ -58,3 +65,9 @@ jobs:
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker:${{ github.sha }} \
             -f ./services/worker/Dockerfile ./services/worker
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker --all-tags
+
+      # 5. 쿠버네티스 클러스터 자동 배포 (Main/Master 브랜치만 수행)
+      - name: Deploy to Kubernetes
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        run: |
+          kubectl apply -f deploy.yaml --kubeconfig <(echo "${{ secrets.KUBECONFIG }}")

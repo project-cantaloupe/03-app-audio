@@ -7,6 +7,7 @@ on:
     branches: [ "main", "master" ]
 
 env:
+  # Harbor 레지스트리의 NodePort(:31432)를 명시
   HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net:31432
 
 jobs:
@@ -25,14 +26,17 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
 
-      # 2-1. Insecure Registry 설정 (HTTP 허용)
-      - name: Set Insecure Registry for Docker
+      # 3. Docker Daemon에 Insecure Registry(HTTP) 등록
+      #    (:31432 포트가 HTTP 통신이므로 반드시 필요)
+      - name: Configure Insecure Registry for Docker
         run: |
-          sudo json=$(jq '. + {"insecure-registries": ["${{ env.HARBOR_REGISTRY }}"]}' /etc/docker/daemon.json 2>/dev/null || echo '{"insecure-registries": ["${{ env.HARBOR_REGISTRY }}"]}')
-          echo "$json" | sudo tee /etc/docker/daemon.json
+          sudo bash -c '
+            mkdir -p /etc/docker
+            echo "{\"insecure-registries\": [\"${{ env.HARBOR_REGISTRY }}\"]}" > /etc/docker/daemon.json
+          '
           sudo systemctl restart docker
 
-      # 3. Harbor Private Registry 로그인
+      # 4. Harbor Private Registry 로그인
       - name: Log in to Harbor
         uses: docker/login-action@v3
         with:
@@ -40,7 +44,7 @@ jobs:
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      # 4-1. API 서비스 빌드 & 푸시
+      # 5-1. API 서비스 빌드 & 푸시
       - name: Build and Push API Service
         run: |
           docker build --no-cache \
@@ -50,7 +54,7 @@ jobs:
           docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-api:latest
           docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-api:${{ github.sha }}
 
-      # 4-2. Web 서비스 빌드 & 푸시
+      # 5-2. Web 서비스 빌드 & 푸시
       - name: Build and Push Web Service
         run: |
           docker build --no-cache \
@@ -60,7 +64,7 @@ jobs:
           docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-web:latest
           docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-web:${{ github.sha }}
 
-      # 4-3. Worker 서비스 빌드 & 푸시
+      # 5-3. Worker 서비스 빌드 & 푸시
       - name: Build and Push Worker Service
         run: |
           docker build --no-cache \

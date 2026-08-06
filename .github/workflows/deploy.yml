@@ -65,10 +65,3 @@ jobs:
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker:${{ github.sha }} \
             -f ./services/worker/Dockerfile ./services/worker
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker --all-tags
-
-      # 5. (선택사항) 쿠버네티스 클러스터 배포
-      - name: Deploy to Kubernetes
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        run: |
-          # deploy.yaml 파일이 프로젝트 내에 위치할 경우 실행
-          kubectl apply -f deploy.yaml --kubeconfig <(echo "${{ secrets.KUBECONFIG }}")

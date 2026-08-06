@@ -1,4 +1,4 @@
-name: CI/CD Pipeline for app-audio
+name: CI Pipeline for app-audio
 
 on:
   push:
@@ -27,18 +27,25 @@ jobs:
           tags: tag:ci
           hostname: github-runner-${{ github.run_id }}
 
-      # 3. Docker Daemon Insecure 설정, 네트워크 대기 및 CLI 로그인
+      # 3. Docker Daemon Insecure 설정, IP 강제 매핑 및 CLI 로그인
       - name: Configure Docker & Log in to Harbor
         env:
           HARBOR_USER: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASS: ${{ secrets.HARBOR_PASSWORD }}
         run: |
-          # 1) Insecure Registry 설정
+          # 1) Tailscale IP 사전 추출 후 /etc/hosts 강제 등록 (docker login 멈춤 방지)
+          HARBOR_IP=$(getent hosts cntlp-onp-wk-01.tail270b85.ts.net | awk '{ print $1 }')
+          echo "Resolved Harbor IP: $HARBOR_IP"
+          if [ -n "$HARBOR_IP" ]; then
+            echo "$HARBOR_IP cntlp-onp-wk-01.tail270b85.ts.net" | sudo tee -a /etc/hosts
+          fi
+
+          # 2) Insecure Registry 설정 및 도커 재시작
           sudo mkdir -p /etc/docker
           echo '{"insecure-registries": ["'${{ env.HARBOR_REGISTRY }}'"]}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
           
-          # 2) Tailscale 네트워크 가용성 확인 (최대 30초 대기)
+          # 3) Tailscale 네트워크 가용성 확인 (최대 30초 대기)
           echo "Waiting for Tailscale network routing to Harbor..."
           for i in {1..10}; do
             if curl -s --connect-timeout 2 http://${{ env.HARBOR_REGISTRY }}/v2/ > /dev/null 2>&1; then
@@ -49,8 +56,8 @@ jobs:
             sleep 3
           done
           
-          # 3) CLI 로그인 (printf 사용으로 개행문자 제거 및 특수문자 안전 전달)
-          printf "%s" "$HARBOR_PASS" | docker login ${{ env.HARBOR_REGISTRY }} -u "$HARBOR_USER" --password-stdin
+          # 4) CLI 로그인 (Standard Input 확실히 전달)
+          echo "$HARBOR_PASS" | docker login ${{ env.HARBOR_REGISTRY }} -u "$HARBOR_USER" --password-stdin
 
       # 4-1. API 서비스 빌드 및 푸시
       - name: Build and Push API Service

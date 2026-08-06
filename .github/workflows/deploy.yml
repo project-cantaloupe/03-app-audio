@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ "main", "master" ]
 
+# Harbor 레지스트리 주소를 env 공통 변수로 정의 (포트 :31432 추가)
+env:
+  HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net:31432
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -22,31 +26,40 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
 
-      # 3. Harbor Private Registry 로그인
+      # 3. Harbor Private Registry 로그인 (:31432 포트로 접속)
       - name: Log in to Harbor
         uses: docker/login-action@v3
         with:
-          registry: cntlp-onp-wk-01.tail270b85.ts.net
+          registry: ${{ env.HARBOR_REGISTRY }}
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
       # 4-1. API 서비스 빌드 & 푸시
       - name: Build and Push API Service
         run: |
-          docker build --no-cache -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:latest -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:${{ github.sha }} -f ./services/api/Dockerfile ./services/api
-          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:latest
-          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:${{ github.sha }}
+          docker build --no-cache \
+            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-api:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-api:${{ github.sha }} \
+            -f ./services/api/Dockerfile ./services/api
+          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-api:latest
+          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-api:${{ github.sha }}
 
       # 4-2. Web 서비스 빌드 & 푸시
       - name: Build and Push Web Service
         run: |
-          docker build --no-cache -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:latest -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:${{ github.sha }} -f ./services/web/Dockerfile ./services/web
-          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:latest
-          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-web:${{ github.sha }}
+          docker build --no-cache \
+            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-web:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-web:${{ github.sha }} \
+            -f ./services/web/Dockerfile ./services/web
+          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-web:latest
+          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-web:${{ github.sha }}
 
       # 4-3. Worker 서비스 빌드 & 푸시
       - name: Build and Push Worker Service
         run: |
-          docker build --no-cache -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:latest -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:${{ github.sha }} -f ./services/worker/Dockerfile ./services/worker
-          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:latest
-          docker push cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-worker:${{ github.sha }}
+          docker build --no-cache \
+            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-worker:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/library/app-audio-worker:${{ github.sha }} \
+            -f ./services/worker/Dockerfile ./services/worker
+          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-worker:latest
+          docker push ${{ env.HARBOR_REGISTRY }}/library/app-audio-worker:${{ github.sha }}

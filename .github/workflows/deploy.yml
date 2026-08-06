@@ -22,13 +22,17 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
           tags: tag:ci
 
-      # 3. Docker Buildx 설정 (Runner 호스트의 Tailscale DNS망 활용)
+      # 3. Docker Buildx 설정 (Tailscale DNS 공유 + HTTPS 프로토콜 강제)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           driver: docker-container
           driver-opts: |
             network=host
+          config-inline: |
+            [registry."cntlp-onp-wk-01.tail270b85.ts.net"]
+              http = false
+              insecure = false
 
       # 4. Harbor Private Registry 로그인
       - name: Log in to Harbor

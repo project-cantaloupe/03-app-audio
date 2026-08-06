@@ -120,3 +120,4 @@ LocalStack용 더미 AWS 자격 증명과 PostgreSQL의 로컬 trust 인증은 C
 한쪽만 배포되면 메시지를 못 읽는다.
 
 # CI/CD pipeline test
+# CI/CD pipeline test

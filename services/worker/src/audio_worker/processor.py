@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import tempfile
 import uuid
@@ -52,6 +54,8 @@ class Processor:
             except Exception as error:
                 raise WorkerError("SOURCE_DOWNLOAD_FAILED", retryable=True) from error
 
+            self._verify_checksum(source_path, job)
+
             try:
                 media = probe(source_path, self._config.maximum_duration_seconds)
                 transcode_mp3(source_path, playback_path, job.targets.mp3_bitrate_kbps)
@@ -94,13 +98,13 @@ class Processor:
         )
 
     def _verify_source(self, job: TranscodeJob) -> None:
+        """내려받기 전에 확인할 수 있는 것만 본다.
+
+        SHA-256은 여기서 보지 않는다. API의 Presigned URL이 체크섬을 서명할 수
+        없어 S3에 SHA-256이 기록되지 않기 때문이다. 대조는 파일을 받은 뒤
+        _verify_checksum이 수행한다.
+        """
         try:
-            response = self._s3.head_object(
-                Bucket=job.source.bucket,
-                Key=job.source.key,
-                VersionId=job.source.version_id,
-                ChecksumMode="ENABLED",
-            )
             tags = self._s3.get_object_tagging(
                 Bucket=job.source.bucket,
                 Key=job.source.key,
@@ -109,11 +113,22 @@ class Processor:
         except Exception as error:
             raise WorkerError("SOURCE_METADATA_UNAVAILABLE", retryable=True) from error
 
-        if response.get("ChecksumSHA256") != job.source.checksum_sha256:
-            raise WorkerError("SOURCE_CHECKSUM_MISMATCH", retryable=False)
         tag_values = {item["Key"]: item["Value"] for item in tags.get("TagSet", [])}
         if tag_values.get(self._config.clean_tag_key) != self._config.clean_tag_value:
             raise WorkerError("SOURCE_NOT_CLEAN", retryable=False)
+
+    def _verify_checksum(self, source_path: Path, job: TranscodeJob) -> None:
+        """내려받은 바이트로 직접 SHA-256을 계산해 대조한다.
+
+        FFmpeg가 어차피 원본 전체를 필요로 하므로 추가 전송 비용은 없다.
+        큰 파일에서 메모리를 쓰지 않도록 스트리밍으로 읽는다.
+        """
+        digest = hashlib.sha256()
+        with source_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if base64.b64encode(digest.digest()).decode() != job.source.checksum_sha256:
+            raise WorkerError("SOURCE_CHECKSUM_MISMATCH", retryable=False)
 
 
 def result_event(

@@ -83,8 +83,13 @@ func TestCreateUploadBuildsImmutableSourceKey(t *testing.T) {
 	if repository.record.SourceKey != "incoming/audio-id/upload-id/source" {
 		t.Fatalf("unexpected source key: %s", repository.record.SourceKey)
 	}
-	if result.UploadHeaders["x-amz-checksum-sha256"] != validChecksum() {
-		t.Fatal("signed checksum header missing")
+	if result.UploadHeaders["Content-Type"] != "audio/mpeg" {
+		t.Fatalf("unexpected content type header: %q", result.UploadHeaders["Content-Type"])
+	}
+	// Presign이 서명하지 못하는 헤더를 돌려주면 브라우저 업로드가 S3에서
+	// 403으로 거부된다. 서명된 헤더만 나가야 한다.
+	if len(result.UploadHeaders) != 1 {
+		t.Fatalf("upload headers must contain only signed headers, got %v", result.UploadHeaders)
 	}
 	if !result.ExpiresAt.Equal(clock.value.Add(15 * time.Minute)) {
 		t.Fatalf("unexpected expiry: %s", result.ExpiresAt)
@@ -102,19 +107,35 @@ func TestCreateUploadRejectsOversizedObject(t *testing.T) {
 	}
 }
 
-func TestCompleteUploadRejectsChecksumMismatch(t *testing.T) {
-	checksum := validChecksum()
+func TestCompleteUploadRejectsSizeMismatch(t *testing.T) {
 	repository := &fakeRepository{record: Audio{
 		ID: "audio-id", UploadID: "upload-id", OwnerSubject: "owner", Status: StatusUploadPending,
-		SourceSize: 10, SourceContentType: "audio/mpeg", SourceChecksum: checksum,
+		SourceSize: 10, SourceContentType: "audio/mpeg", SourceChecksum: validChecksum(),
 	}}
 	service := NewService(repository, fakeObjectStore{object: SourceObject{
-		VersionID: "v1", ContentLength: 10, ContentType: "audio/mpeg", ChecksumSHA256: "different",
+		VersionID: "v1", ContentLength: 11, ContentType: "audio/mpeg",
 	}}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"job-id", "event-id"}}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
 	_, err := service.CompleteUpload(context.Background(), "owner", "audio-id")
 	if !errors.Is(err, ErrObjectMismatch) {
 		t.Fatalf("expected ErrObjectMismatch, got %v", err)
+	}
+}
+
+// S3는 Presigned PUT으로 올라온 객체에 SHA-256을 기록하지 않는다. 그 값이
+// 비어 있다는 이유로 업로드를 거부하면 정상 업로드가 전부 막힌다.
+// 무결성 대조는 원본을 내려받는 transcode 워커가 담당한다.
+func TestCompleteUploadAcceptsObjectWithoutStoredChecksum(t *testing.T) {
+	repository := &fakeRepository{record: Audio{
+		ID: "audio-id", UploadID: "upload-id", OwnerSubject: "owner", Status: StatusUploadPending,
+		SourceSize: 10, SourceContentType: "audio/mpeg", SourceChecksum: validChecksum(),
+	}}
+	service := NewService(repository, fakeObjectStore{object: SourceObject{
+		VersionID: "v1", ContentLength: 10, ContentType: "audio/mpeg", ChecksumSHA256: "",
+	}}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"job-id", "event-id"}}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+
+	if _, err := service.CompleteUpload(context.Background(), "owner", "audio-id"); err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
 	}
 }
 

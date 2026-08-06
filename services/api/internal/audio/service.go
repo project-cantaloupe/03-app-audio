@@ -104,9 +104,10 @@ func (s *Service) CreateUpload(ctx context.Context, input CreateUploadInput) (Cr
 		AudioID:   audioID,
 		UploadID:  uploadID,
 		UploadURL: url,
+		// Presign이 서명한 헤더만 돌려준다. 서명되지 않은 x-amz-* 헤더를
+		// 하나라도 보내면 S3가 403으로 거부한다.
 		UploadHeaders: map[string]string{
-			"Content-Type":          input.ContentType,
-			"x-amz-checksum-sha256": input.ChecksumSHA256,
+			"Content-Type": input.ContentType,
 		},
 		ExpiresAt: now.Add(s.uploadExpiry),
 	}, nil
@@ -134,11 +135,13 @@ func (s *Service) CompleteUpload(ctx context.Context, ownerSubject, audioID stri
 	if err != nil {
 		return Audio{}, fmt.Errorf("head uploaded object: %w", err)
 	}
+	// SHA-256은 여기서 대조하지 않는다. Presign이 체크섬을 서명할 수 없어
+	// S3가 이 값을 저장하지 않기 때문이다. 원본 무결성은 파일을 실제로
+	// 내려받는 transcode 워커가 SOURCE_CHECKSUM_MISMATCH로 검증한다.
 	if object.VersionID == "" ||
 		(record.SourceVersion != "" && record.SourceVersion != object.VersionID) ||
 		object.ContentLength != record.SourceSize ||
-		normalizeContentType(object.ContentType) != record.SourceContentType ||
-		object.ChecksumSHA256 != record.SourceChecksum {
+		normalizeContentType(object.ContentType) != record.SourceContentType {
 		return Audio{}, ErrObjectMismatch
 	}
 

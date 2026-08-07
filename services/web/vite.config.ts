@@ -27,13 +27,6 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       chunkSizeWarningLimit: 700,
-      rollupOptions: {
-        output: {
-          manualChunks(id) {
-            if (id.includes("wavesurfer.js")) return "vendor-wavesurfer";
-          },
-        },
-      },
     },
   };
 });

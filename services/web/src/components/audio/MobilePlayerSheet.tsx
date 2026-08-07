@@ -1,12 +1,11 @@
 import { ChevronDown, Heart, ListPlus, ListMusic, Volume2 } from "lucide-react";
-import type { RefObject } from "react";
 import { usePlayerStore } from "../../stores/playerStore";
 import { formatTime } from "../../utils/time";
-import { AudioWaveform } from "./AudioWaveform";
+import { LiveWaveform } from "./LiveWaveform";
 import { PlaybackControls } from "./PlaybackControls";
 import { SignalArtwork } from "../ui/SignalArtwork";
 
-export function MobilePlayerSheet({ mediaRef }: { mediaRef: RefObject<HTMLAudioElement> }) {
+export function MobilePlayerSheet() {
   const open = usePlayerStore((state) => state.mobileOpen);
   const setOpen = usePlayerStore((state) => state.setMobileOpen);
   const track = usePlayerStore((state) => state.currentTrack);
@@ -22,7 +21,7 @@ export function MobilePlayerSheet({ mediaRef }: { mediaRef: RefObject<HTMLAudioE
         <div><p className="eyebrow">NOW PLAYING</p><h2>{track.title}</h2><span>{track.creator?.displayName ?? "Creator metadata unavailable"}</span></div>
         <button className="icon-button" aria-label="Like track" disabled><Heart size={21} /></button>
       </div>
-      {track.waveform ? <AudioWaveform media={mediaRef.current} waveform={track.waveform} height={92} /> : <div className="player__empty-wave" aria-hidden="true" />}
+      {track.waveform ? <LiveWaveform waveform={track.waveform} trackId={track.id} variant="sheet" interactive /> : <div className="player__empty-wave" aria-hidden="true" />}
       <div className="time-row"><span>{formatTime(currentTime)}</span><span>{formatTime(duration)}</span></div>
       <PlaybackControls large disabled={!track.streamUrl} />
       <div className="mobile-player-sheet__actions">

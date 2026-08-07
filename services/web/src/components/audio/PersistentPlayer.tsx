@@ -1,15 +1,14 @@
 import { Heart, ListMusic, Maximize2, Volume2, VolumeX } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { usePlayerStore } from "../../stores/playerStore";
 import { formatTime } from "../../utils/time";
 import { SignalArtwork } from "../ui/SignalArtwork";
-import { AudioWaveform } from "./AudioWaveform";
+import { LiveWaveform } from "./LiveWaveform";
 import { MobilePlayerSheet } from "./MobilePlayerSheet";
 import { PlaybackControls } from "./PlaybackControls";
 
 export function PersistentPlayer() {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const [media, setMedia] = useState<HTMLAudioElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const track = usePlayerStore((state) => state.currentTrack);
   const isPlaying = usePlayerStore((state) => state.isPlaying);
   const setPlaying = usePlayerStore((state) => state.setPlaying);
@@ -25,8 +24,17 @@ export function PersistentPlayer() {
   const toggleMuted = usePlayerStore((state) => state.toggleMuted);
   const setMobileOpen = usePlayerStore((state) => state.setMobileOpen);
   const next = usePlayerStore((state) => state.next);
+  const setMediaElement = usePlayerStore((state) => state.setMediaElement);
 
-  useEffect(() => setMedia(audioRef.current), []);
+  // <audio>는 트랙이 있을 때만 렌더되므로 마운트 이펙트로는 잡히지 않는다.
+  // 콜백 ref라야 엘리먼트가 실제로 붙고 떨어지는 시점에 정확히 등록된다.
+  const attachMedia = useCallback(
+    (node: HTMLAudioElement | null) => {
+      audioRef.current = node;
+      setMediaElement(node);
+    },
+    [setMediaElement],
+  );
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -51,7 +59,9 @@ export function PersistentPlayer() {
     } else {
       audio.pause();
     }
-  }, [isPlaying, setError, setPlaying]);
+  // 재생 중 queue의 다음 트랙으로 바뀌면 source effect가 audio.load()를 호출해
+  // 엘리먼트가 일시정지된다. 트랙 식별자도 의존성에 넣어 새 source를 다시 재생한다.
+  }, [isPlaying, setError, setPlaying, track?.id, track?.streamUrl]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -73,7 +83,7 @@ export function PersistentPlayer() {
     <>
       <footer className="player" aria-label="Audio player">
         <audio
-          ref={audioRef}
+          ref={attachMedia}
           preload="metadata"
           onTimeUpdate={(event) => setTiming(event.currentTarget.currentTime, event.currentTarget.duration || 0)}
           onLoadedMetadata={(event) => setTiming(0, event.currentTarget.duration || 0)}
@@ -91,7 +101,7 @@ export function PersistentPlayer() {
           <PlaybackControls disabled={!track.streamUrl} />
           <div className="player__timeline">
             <span>{formatTime(currentTime)}</span>
-            {media && track.streamUrl && track.waveform ? <AudioWaveform media={media} waveform={track.waveform} compact /> : <div className="player__empty-wave" aria-hidden="true" />}
+            {track.streamUrl && track.waveform ? <LiveWaveform waveform={track.waveform} trackId={track.id} variant="compact" interactive /> : <div className="player__empty-wave" aria-hidden="true" />}
             <span>{formatTime(duration)}</span>
           </div>
         </div>
@@ -103,7 +113,7 @@ export function PersistentPlayer() {
         </div>
         {error ? <p className="player__error" role="alert">{error}</p> : null}
       </footer>
-      <MobilePlayerSheet mediaRef={audioRef} />
+      <MobilePlayerSheet />
     </>
   );
 }

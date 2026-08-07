@@ -56,8 +56,8 @@ jobs:
             sleep 3
           done
           
-          # 4) 특수문자 왜곡 방지를 위한 printf 파이프 로그인
-          printf '%s\n' "$HARBOR_PASS" | docker login ${{ env.HARBOR_REGISTRY }} --username "$HARBOR_USER" --password-stdin
+          # 4) 개행 문자(\n) 없이 순수 문자열만 전달하도록 수정
+          printf '%s' "$HARBOR_PASS" | docker login ${{ env.HARBOR_REGISTRY }} --username "$HARBOR_USER" --password-stdin
 
       # 4-1. API 서비스 빌드 및 푸시
       - name: Build and Push API Service

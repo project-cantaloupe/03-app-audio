@@ -80,10 +80,28 @@ type ListCursor struct {
 	ID        string
 }
 
+// ListScope는 목록의 대상을 정한다.
+//
+// ScopeOwner   요청자 본인의 트랙. 상태와 무관하게 전부
+// ScopePublic  공개 카탈로그. 소유자와 무관하되 public + READY만
+type ListScope string
+
+const (
+	ScopeOwner  ListScope = "owner"
+	ScopePublic ListScope = "public"
+)
+
 type ListAudiosInput struct {
 	OwnerSubject string
+	Scope        ListScope
 	Limit        int
 	Cursor       string
+}
+
+type UpdateVisibilityInput struct {
+	OwnerSubject string
+	AudioID      string
+	Visibility   Visibility
 }
 
 // NextCursor가 비어 있으면 마지막 페이지다.

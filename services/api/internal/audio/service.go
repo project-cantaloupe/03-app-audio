@@ -81,13 +81,20 @@ func (s *Service) CreateUpload(ctx context.Context, input CreateUploadInput) (Cr
 	if !validSHA256(input.ChecksumSHA256) {
 		return CreateUploadOutput{}, fmt.Errorf("%w: checksum must be a base64-encoded SHA-256 digest", ErrInvalidInput)
 	}
+	// 값을 안 보내면 private다. 공개는 요청자가 명시해야 한다.
+	if input.Visibility == "" {
+		input.Visibility = VisibilityPrivate
+	}
+	if input.Visibility != VisibilityPrivate && input.Visibility != VisibilityPublic {
+		return CreateUploadOutput{}, fmt.Errorf("%w: visibility must be private or public", ErrInvalidInput)
+	}
 
 	now := s.clock.Now().UTC()
 	audioID := s.ids.New()
 	uploadID := s.ids.New()
 	record := Audio{
 		ID: audioID, OwnerSubject: input.OwnerSubject, Title: input.Title,
-		Visibility: VisibilityPrivate, Status: StatusUploadPending, UploadID: uploadID,
+		Visibility: input.Visibility, Status: StatusUploadPending, UploadID: uploadID,
 		SourceBucket:   s.bucket,
 		SourceKey:      fmt.Sprintf("incoming/%s/%s/source", audioID, uploadID),
 		SourceChecksum: input.ChecksumSHA256, SourceSize: input.ContentLength,

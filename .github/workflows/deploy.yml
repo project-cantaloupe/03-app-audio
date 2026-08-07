@@ -33,7 +33,7 @@ jobs:
           USERNAME: ${{ secrets.HARBOR_USERNAME }}
           PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
         run: |
-          # 1) Tailscale IP 사전 추출 후 /etc/hosts 강제 등록 (DNS 지원)
+          # 1) Tailscale IP 사전 추출 후 /etc/hosts 강제 등록
           HARBOR_IP=$(getent hosts cntlp-onp-wk-01.tail270b85.ts.net | awk '{ print $1 }')
           echo "Resolved Harbor IP: $HARBOR_IP"
 
@@ -64,7 +64,7 @@ jobs:
             sleep 3
           done
 
-          # 4) 개행 문자 유실 없는 안정적인 Harbor 로그인
+          # 4) Harbor 로그인
           printf '%s' "$PASSWORD" | docker login \
             "${{ env.HARBOR_REGISTRY }}" \
             --username "$USERNAME" \
@@ -78,7 +78,8 @@ jobs:
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }} \
             -f ./services/api/Dockerfile ./services/api
 
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api --all-tags
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:latest
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }}
 
       # 5. Web 서비스 빌드 및 푸시
       - name: Build and Push Web Service
@@ -87,18 +88,20 @@ jobs:
             --build-arg VITE_DEV_SUBJECT="${{ vars.VITE_DEV_SUBJECT }}" \
             --build-arg VITE_AUTH_MODE="${{ vars.VITE_AUTH_MODE || 'development' }}" \
             --build-arg VITE_API_BASE_URL="${{ vars.VITE_API_BASE_URL }}" \
-            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web:latest \
-            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web:${{ github.sha }} \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:${{ github.sha }} \
             -f ./services/web/Dockerfile ./services/web
 
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web --all-tags
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:latest
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:${{ github.sha }}
 
       # 6. Worker 서비스 빌드 및 푸시
       - name: Build and Push Worker Service
         run: |
           docker build \
-            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker:latest \
-            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker:${{ github.sha }} \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:${{ github.sha }} \
             -f ./services/worker/Dockerfile ./services/worker
 
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker --all-tags
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:latest
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:${{ github.sha }}

@@ -7,7 +7,7 @@ on:
     branches: [ "main", "master" ]
 
 env:
-  HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net:31432
+  HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net:32432
   HARBOR_PROJECT: library
 
 jobs:

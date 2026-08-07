@@ -53,8 +53,8 @@ jobs:
             sleep 3
           done
           
-          # 4) Bash 변수 파싱 변형 방지를 위해 GitHub context 값을 직접 따옴표 전달
-          printf '%s' '${{ secrets.HARBOR_PASSWORD }}' | docker login ${{ env.HARBOR_REGISTRY }} --username '${{ secrets.HARBOR_USERNAME }}' --password-stdin-stdin
+          # 4) 특수문자 변형 방지를 위한 GitHub Context 직접 주입 & 개행 제거 로그인
+          printf '%s' '${{ secrets.HARBOR_PASSWORD }}' | docker login ${{ env.HARBOR_REGISTRY }} --username '${{ secrets.HARBOR_USERNAME }}' --password-stdin
 
       # 4-1. API 서비스 빌드 및 푸시
       - name: Build and Push API Service

@@ -27,9 +27,13 @@ jobs:
           tags: tag:ci
           hostname: github-runner-${{ github.run_id }}
 
-      # 3. Docker 설정
-      - name: Configure Docker
+      # 3. Docker 설정 및 Harbor 로그인
+      - name: Configure Docker & Login to Harbor
+        env:
+          USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
         run: |
+          # 1) Tailscale IP 사전 추출 후 /etc/hosts 강제 등록 (DNS 지원)
           HARBOR_IP=$(getent hosts cntlp-onp-wk-01.tail270b85.ts.net | awk '{ print $1 }')
           echo "Resolved Harbor IP: $HARBOR_IP"
 
@@ -37,8 +41,8 @@ jobs:
             echo "$HARBOR_IP cntlp-onp-wk-01.tail270b85.ts.net" | sudo tee -a /etc/hosts
           fi
 
+          # 2) Insecure Registry 설정 및 도커 재시작
           sudo mkdir -p /etc/docker
-
           cat <<EOF | sudo tee /etc/docker/daemon.json
           {
             "insecure-registries": [
@@ -49,40 +53,24 @@ jobs:
 
           sudo systemctl restart docker
 
+          # 3) Harbor 네트워크 연결 가용성 확인
           echo "Waiting for Harbor..."
-
           for i in {1..10}; do
             if curl -s --connect-timeout 2 http://${{ env.HARBOR_REGISTRY }}/v2/ >/dev/null; then
               echo "Harbor network is ready!"
               break
             fi
-
             echo "Retry $i..."
             sleep 3
           done
 
-      # 4. Secret 확인 (비밀번호는 출력 안됨)
-      - name: Debug Harbor Secrets
-        env:
-          USERNAME: ${{ secrets.HARBOR_USERNAME }}
-          PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-        run: |
-          echo "Username=[$USERNAME]"
-          echo "Username length=$(printf '%s' "$USERNAME" | wc -c)"
-          echo "Password length=$(printf '%s' "$PASSWORD" | wc -c)"
-
-      # 5. Harbor 로그인
-      - name: Login Harbor
-        env:
-          USERNAME: ${{ secrets.HARBOR_USERNAME }}
-          PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-        run: |
+          # 4) 개행 문자 유실 없는 안정적인 Harbor 로그인
           printf '%s' "$PASSWORD" | docker login \
             "${{ env.HARBOR_REGISTRY }}" \
             --username "$USERNAME" \
             --password-stdin
 
-      # 6. API
+      # 4. API 서비스 빌드 및 푸시
       - name: Build and Push API Service
         run: |
           docker build \
@@ -92,7 +80,7 @@ jobs:
 
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api --all-tags
 
-      # 7. Web
+      # 5. Web 서비스 빌드 및 푸시
       - name: Build and Push Web Service
         run: |
           docker build \
@@ -105,7 +93,7 @@ jobs:
 
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web --all-tags
 
-      # 8. Worker
+      # 6. Worker 서비스 빌드 및 푸시
       - name: Build and Push Worker Service
         run: |
           docker build \

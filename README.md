@@ -40,16 +40,69 @@ CI가 푸시    …ts.net/library/app-audio-{api,web,worker}
 k8s가 pull   ghcr.io/project-cantaloupe/audio-{api,web,worker}:dev
 ```
 
-레지스트리와 이미지 이름이 모두 달라서, 현재 배포에 반영하려면 GHCR로 직접
-빌드·푸시해야 한다.
+레지스트리와 이미지 이름이 모두 달라서, 두 경로가 하나로 합쳐지기 전까지는
+GHCR로 직접 빌드·푸시해야 배포에 반영된다.
 
 ```bash
 docker buildx build --platform linux/amd64 \
   -t ghcr.io/project-cantaloupe/audio-api:dev --push services/api
+
+docker buildx build --platform linux/amd64 \
+  --build-arg VITE_DEV_SUBJECT=browser-tester \
+  -t ghcr.io/project-cantaloupe/audio-web:dev --push services/web
 ```
 
 매니페스트의 `imagePullPolicy`가 `Always`이므로 푸시 후 `rollout restart`로
 새 이미지를 받는다.
+
+### Web 빌드 인자
+
+**Vite는 `import.meta.env` 값을 빌드 시점에 번들로 굳힌다.** 런타임 환경변수나
+ConfigMap이 아니므로, 빌드할 때 넘기지 않으면 이미지에 값이 없다.
+
+```
+VITE_AUTH_MODE     기본 development
+VITE_DEV_SUBJECT   개발용 subject. 비면 authService가 세션을 만들지 못해
+                   업로드 화면이 "An authenticated session is required"로 막힌다
+VITE_API_BASE_URL  비우면 같은 출처로 호출한다
+```
+
+수동 빌드와 CI 모두 같은 값을 넘겨야 한다. CI는 `.github/workflows/deploy.yml`이
+저장소 Variables에서 읽는다.
+
+Keycloak OIDC가 붙으면 `VITE_DEV_SUBJECT` 대신 `VITE_AUTH_MODE=oidc`와 issuer,
+client id를 넘긴다.
+
+## API
+
+```
+POST   /v1/audios/uploads          업로드 세션 생성. Presigned PUT URL 발급
+                                   title, content_type, content_length,
+                                   checksum_sha256, visibility(선택, 기본 private)
+POST   /v1/audios/{id}/complete    업로드 확정. 크기·타입·버전 검증 후 스캔 제출
+GET    /v1/audios                  본인 트랙 목록. 상태 무관, 최신순
+GET    /v1/audios?scope=public     공개 카탈로그. 소유자 무관, public + READY만
+GET    /v1/audios/{id}             상세. 비공개는 소유자만
+PATCH  /v1/audios/{id}             공개 여부 전환. 소유자만
+GET    /v1/audios/{id}/playback    CloudFront Signed URL. READY만, 3시간 만료
+```
+
+목록은 커서 기반이다. `next_cursor`가 없으면 마지막 페이지다. OFFSET을 쓰지
+않는 이유는 페이지를 넘기는 도중 새 업로드가 들어오면 행이 밀려 중복과 누락이
+생기기 때문이다.
+
+**공개는 목록 노출과 상세 조회 허용을 뜻한다.** 공개해도 재생 URL은 여전히
+서명이 필요하고 만료된다.
+
+## 마이그레이션
+
+`services/api/migrations/`에 순서대로 둔다. 실행기가 없으므로 배포 전에 직접
+적용한다.
+
+```
+001_init.sql             초기 스키마
+002_public_catalog.sql   공개 카탈로그용 부분 인덱스
+```
 
 ## 현재 구현 범위
 
@@ -65,18 +118,29 @@ docker buildx build --platform linux/amd64 \
 - PostgreSQL 초기 스키마와 SQS 메시지 계약
 - PostgreSQL·LocalStack을 사용하는 로컬 실행 구성
 - Kubernetes 배포 매니페스트 (`02-k8s-manifests/apps/audio`)
+- 본인 트랙 목록과 공개 카탈로그, 공개 여부 전환
 
 아직 구현하지 않은 경계는 다음과 같다.
 
 - Keycloak OIDC 검증. 현재 `AUTH_MODE=development`에서만 개발용 subject header 사용
-- 목록·검색·Creator·Playlist API와 해당 화면의 실제 데이터
+- 검색·Creator·Playlist API와 해당 화면의 실제 데이터
 - 실제 악성코드 검사기
 
 `01-infra-provisioning`의 S3, SQS와 CloudFront는 적용됐다.
 
 ## AWS 데이터 경로 E2E
 
-2026-08-06에 `https://audio.echoprism.cloud`로 전 구간을 통과시켰다.
+2026-08-06에 `https://audio.echoprism.cloud`로 API와 브라우저 양쪽에서 전
+구간을 통과시켰다. 브라우저에서만 드러난 결함이 셋 있었다.
+
+```
+VITE_DEV_SUBJECT 미전달   업로드 화면 자체가 차단
+S3 CORS Origin 누락        파일 선택 후 전송에서 차단
+라이브러리 기본 탭         데이터 없는 탭이 먼저 열려 목록이 비어 보임
+```
+
+curl은 헤더를 직접 붙이고 Origin 검사도 받지 않는다. **API 레벨 검증만으로는
+이 셋 중 어느 것도 발견되지 않는다.**
 
 ```
 업로드 URL 발급 → S3 PUT → complete → 스캔 → 변환 → 재생 URL → CloudFront 수신

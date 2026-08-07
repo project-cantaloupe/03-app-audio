@@ -69,9 +69,20 @@ jobs:
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api --all-tags
 
       # 4-2. Web 서비스 빌드 및 푸시
+      #
+      # ⚠️ Vite는 import.meta.env 값을 빌드 시점에 번들로 굳힌다. 런타임
+      #    환경변수나 ConfigMap이 아니다. --build-arg 를 빼면 authService가
+      #    세션을 만들지 못해 업로드 화면이 "An authenticated session is
+      #    required"로 막힌 이미지가 나온다.
+      #
+      #    Keycloak OIDC가 붙으면 VITE_DEV_SUBJECT 대신 VITE_AUTH_MODE=oidc 와
+      #    issuer, client id 를 넘긴다.
       - name: Build and Push Web Service
         run: |
           docker build \
+            --build-arg VITE_DEV_SUBJECT="${{ vars.VITE_DEV_SUBJECT }}" \
+            --build-arg VITE_AUTH_MODE="${{ vars.VITE_AUTH_MODE || 'development' }}" \
+            --build-arg VITE_API_BASE_URL="${{ vars.VITE_API_BASE_URL }}" \
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web:latest \
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web:${{ github.sha }} \
             -f ./services/web/Dockerfile ./services/web

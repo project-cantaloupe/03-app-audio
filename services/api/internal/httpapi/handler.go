@@ -38,6 +38,7 @@ type createUploadRequest struct {
 	ContentType    string `json:"content_type"`
 	ContentLength  int64  `json:"content_length"`
 	ChecksumSHA256 string `json:"checksum_sha256"`
+	Visibility     string `json:"visibility"`
 }
 
 type updateAudioRequest struct {
@@ -53,6 +54,7 @@ func (h *Handler) createUpload(w http.ResponseWriter, r *http.Request) {
 	result, err := h.service.CreateUpload(r.Context(), audio.CreateUploadInput{
 		OwnerSubject: subject(r), Title: body.Title, ContentType: body.ContentType,
 		ContentLength: body.ContentLength, ChecksumSHA256: body.ChecksumSHA256,
+		Visibility: audio.Visibility(body.Visibility),
 	})
 	if err != nil {
 		writeServiceError(w, err)

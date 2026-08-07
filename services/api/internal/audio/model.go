@@ -55,6 +55,8 @@ type CreateUploadInput struct {
 	ContentType    string
 	ContentLength  int64
 	ChecksumSHA256 string
+	// 비워두면 private로 만든다. 공개는 명시적 선택이어야 한다.
+	Visibility Visibility
 }
 
 type CreateUploadOutput struct {

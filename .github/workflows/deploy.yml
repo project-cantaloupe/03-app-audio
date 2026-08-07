@@ -1,10 +1,10 @@
-name: CI/CD Pipeline for app-audio
+name: CI Pipeline for app-audio
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: ["main", "master"]
+    branches: [ "main", "master" ]
 
 env:
   HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net
@@ -12,12 +12,10 @@ env:
 
 jobs:
   build-and-push:
-    # 실제 Harbor Push 및 CD는 main/master push일 때만 실행
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 애플리케이션 저장소 체크아웃
+      # 1. 저장소 소스코드 체크아웃
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -35,166 +33,63 @@ jobs:
           USERNAME: ${{ secrets.HARBOR_USERNAME }}
           PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
         run: |
-          set -euo pipefail
+          # 1) Tailscale IP 사전 추출 후 /etc/hosts 강제 등록
+          HARBOR_IP=$(getent hosts cntlp-onp-wk-01.tail270b85.ts.net | awk '{ print $1 }')
+          echo "Resolved Harbor IP: $HARBOR_IP"
 
-          HARBOR_IP=$(getent hosts "${{ env.HARBOR_REGISTRY }}" | awk 'NR==1 { print $1 }')
-          echo "Resolved Harbor IP: ${HARBOR_IP}"
-
-          if [ -n "${HARBOR_IP}" ]; then
-            echo "${HARBOR_IP} ${{ env.HARBOR_REGISTRY }}" | sudo tee -a /etc/hosts
+          if [ -n "$HARBOR_IP" ]; then
+            echo "$HARBOR_IP cntlp-onp-wk-01.tail270b85.ts.net" | sudo tee -a /etc/hosts
           fi
 
+          # 2) Harbor HTTPS 연결 가용성 확인
           echo "Waiting for Harbor..."
-          READY=0
           for i in {1..10}; do
-            # /v2/는 인증 전 401이어도 Harbor가 응답하고 있다는 뜻
-            STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" \
-              --connect-timeout 2 \
-              "https://${{ env.HARBOR_REGISTRY }}/v2/" || true)
-
-            if [ "${STATUS}" = "200" ] || [ "${STATUS}" = "401" ]; then
-              echo "Harbor network is ready (HTTP ${STATUS})"
-              READY=1
+            if curl -s --connect-timeout 2 https://${{ env.HARBOR_REGISTRY }}/v2/ >/dev/null; then
+              echo "Harbor network is ready!"
               break
             fi
-
-            echo "Retry ${i}... (HTTP ${STATUS})"
+            echo "Retry $i..."
             sleep 3
           done
 
-          if [ "${READY}" != "1" ]; then
-            echo "Harbor is not reachable."
-            exit 1
-          fi
-
-          printf '%s' "${PASSWORD}" | docker login \
+          # 3) Harbor 로그인
+          printf '%s' "$PASSWORD" | docker login \
             "${{ env.HARBOR_REGISTRY }}" \
-            --username "${USERNAME}" \
+            --username "$USERNAME" \
             --password-stdin
 
       # 4. API 서비스 빌드 및 푸시
       - name: Build and Push API Service
         run: |
-          set -euo pipefail
-
           docker build \
-            -t "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:latest" \
-            -t "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }}" \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }} \
             -f ./services/api/Dockerfile ./services/api
 
-          docker push "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:latest"
-          docker push "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }}"
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:latest
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }}
 
       # 5. Web 서비스 빌드 및 푸시
       - name: Build and Push Web Service
         run: |
-          set -euo pipefail
-
           docker build \
             --build-arg VITE_DEV_SUBJECT="${{ vars.VITE_DEV_SUBJECT }}" \
             --build-arg VITE_AUTH_MODE="${{ vars.VITE_AUTH_MODE || 'development' }}" \
             --build-arg VITE_API_BASE_URL="${{ vars.VITE_API_BASE_URL }}" \
-            -t "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:latest" \
-            -t "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:${{ github.sha }}" \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:${{ github.sha }} \
             -f ./services/web/Dockerfile ./services/web
 
-          docker push "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:latest"
-          docker push "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:${{ github.sha }}"
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:latest
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:${{ github.sha }}
 
       # 6. Worker 서비스 빌드 및 푸시
       - name: Build and Push Worker Service
         run: |
-          set -euo pipefail
-
           docker build \
-            -t "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:latest" \
-            -t "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:${{ github.sha }}" \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:latest \
+            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:${{ github.sha }} \
             -f ./services/worker/Dockerfile ./services/worker
 
-          docker push "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:latest"
-          docker push "${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:${{ github.sha }}"
-
-      # 7. Kustomize 설치
-      - name: Setup Kustomize
-        uses: imranismail/setup-kustomize@v2
-
-      # 8. GitOps Manifest 저장소 체크아웃
-      - name: Checkout Kubernetes Manifests
-        uses: actions/checkout@v4
-        with:
-          repository: project-cantaloupe/02-k8s-manifests
-          ref: main
-          token: ${{ secrets.MANIFESTS_TOKEN }}
-          path: k8s-manifests
-
-      # 9. 새 Harbor SHA 이미지로 Kustomize 갱신
-      - name: Update GitOps Image Tags
-        run: |
-          set -euo pipefail
-
-          API_IMAGE="${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }}"
-          WEB_IMAGE="${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:${{ github.sha }}"
-          WORKER_IMAGE="${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:${{ github.sha }}"
-
-          echo "API    : ${API_IMAGE}"
-          echo "WEB    : ${WEB_IMAGE}"
-          echo "WORKER : ${WORKER_IMAGE}"
-
-          (
-            cd k8s-manifests/apps/audio/api
-            kustomize edit set image "audio-api=${API_IMAGE}"
-          )
-
-          (
-            cd k8s-manifests/apps/audio/web
-            kustomize edit set image "audio-web=${WEB_IMAGE}"
-          )
-
-          (
-            cd k8s-manifests/apps/audio/worker
-            kustomize edit set image "audio-worker=${WORKER_IMAGE}"
-          )
-
-      # 10. Kustomize 렌더링 검증
-      - name: Validate Kustomize
-        run: |
-          set -euo pipefail
-          kustomize build k8s-manifests/apps/audio >/tmp/app-audio-rendered.yaml
-
-          echo "Rendered images:"
-          grep -n "image:" /tmp/app-audio-rendered.yaml || true
-
-      # 11. 변경사항 확인
-      - name: Show Manifest Changes
-        run: |
-          cd k8s-manifests
-          git diff -- \
-            apps/audio/api/kustomization.yaml \
-            apps/audio/web/kustomization.yaml \
-            apps/audio/worker/kustomization.yaml
-
-      # 12. GitOps 저장소 Commit & Push
-      #     이후 ArgoCD가 02-k8s-manifests/main 변경을 감지하고 Auto Sync
-      - name: Commit and Push GitOps Changes
-        run: |
-          set -euo pipefail
-          cd k8s-manifests
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add \
-            apps/audio/api/kustomization.yaml \
-            apps/audio/web/kustomization.yaml \
-            apps/audio/worker/kustomization.yaml
-
-          if git diff --cached --quiet; then
-            echo "No GitOps manifest changes."
-            exit 0
-          fi
-
-          git commit -m "deploy(audio): ${{ github.sha }}"
-
-          # 동시에 다른 배포가 들어온 경우를 대비해 최신 main 위에 재배치
-          git pull --rebase origin main
-          git push origin HEAD:main
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:latest
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:${{ github.sha }}

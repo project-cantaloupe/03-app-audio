@@ -11,7 +11,8 @@ export type AudioStatus =
   | "TRANSCODE_FAILED"
   | "DELETED";
 
-export type Visibility = "public" | "unlisted" | "private";
+// API가 받는 값과 일치시킨다. unlisted는 서버에 없어 400으로 거부된다.
+export type Visibility = "public" | "private";
 
 export type AudioRecord = {
   id: string;

@@ -73,6 +73,58 @@ func (r *Repository) ListAudiosByOwner(
 	}
 	defer rows.Close()
 
+	return collectAudios(rows, limit)
+}
+
+// 공개 카탈로그다. 소유자를 가리지 않는 대신 public과 READY로 좁힌다.
+// 처리 중이거나 비공개인 트랙이 남에게 노출되지 않는 경계가 여기 한 곳이다.
+//
+// audios_public_created_idx 가 이 조건을 그대로 담고 있다 (002 마이그레이션).
+func (r *Repository) ListPublicAudios(
+	ctx context.Context, limit int, after *audio.ListCursor,
+) ([]audio.Audio, error) {
+	var createdAt any
+	var id any
+	if after != nil {
+		createdAt = after.CreatedAt
+		id = after.ID
+	}
+
+	rows, err := r.pool.Query(ctx, selectAudio+`
+		WHERE visibility = 'public'
+			AND status = 'READY'
+			AND deleted_at IS NULL
+			AND ($1::timestamptz IS NULL OR (created_at, id) < ($1, $2))
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3`,
+		createdAt, id, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectAudios(rows, limit)
+}
+
+func (r *Repository) UpdateVisibility(
+	ctx context.Context, id string, visibility audio.Visibility, now time.Time,
+) (audio.Audio, error) {
+	row := r.pool.QueryRow(ctx, `
+		UPDATE audios
+		SET visibility = $2, updated_at = $3
+		WHERE id = $1 AND deleted_at IS NULL
+		RETURNING `+audioColumns,
+		id, string(visibility), now,
+	)
+	record, err := scanAudio(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return audio.Audio{}, audio.ErrNotFound
+	}
+	return record, err
+}
+
+func collectAudios(rows pgx.Rows, limit int) ([]audio.Audio, error) {
 	records := make([]audio.Audio, 0, limit)
 	for rows.Next() {
 		record, err := scanAudio(rows)

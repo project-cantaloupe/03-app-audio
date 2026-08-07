@@ -14,6 +14,8 @@ type Repository interface {
 	CreateUpload(context.Context, Audio) error
 	GetAudio(context.Context, string) (Audio, error)
 	ListAudiosByOwner(context.Context, string, int, *ListCursor) ([]Audio, error)
+	ListPublicAudios(context.Context, int, *ListCursor) ([]Audio, error)
+	UpdateVisibility(context.Context, string, Visibility, time.Time) (Audio, error)
 	MarkUploadVerified(context.Context, string, SourceObject, string, string, time.Time) (Audio, error)
 }
 
@@ -192,7 +194,16 @@ func (s *Service) ListAudios(ctx context.Context, input ListAudiosInput) (AudioP
 
 	// 한 건 더 읽어 다음 페이지 존재 여부를 판단한다. 별도 COUNT 쿼리를 돌리면
 	// 그 사이에 행이 추가돼 결과가 어긋날 수 있다.
-	records, err := s.repository.ListAudiosByOwner(ctx, input.OwnerSubject, limit+1, cursor)
+	//
+	// 공개 카탈로그는 소유자를 가리지 않는다. 대신 저장소 쿼리가 public과
+	// READY로 좁히므로, 처리 중이거나 비공개인 트랙이 남에게 보이지 않는다.
+	var records []Audio
+	switch input.Scope {
+	case ScopePublic:
+		records, err = s.repository.ListPublicAudios(ctx, limit+1, cursor)
+	default:
+		records, err = s.repository.ListAudiosByOwner(ctx, input.OwnerSubject, limit+1, cursor)
+	}
 	if err != nil {
 		return AudioPage{}, err
 	}
@@ -208,6 +219,34 @@ func (s *Service) ListAudios(ctx context.Context, input ListAudiosInput) (AudioP
 		page.Items = []Audio{}
 	}
 	return page, nil
+}
+
+// UpdateVisibility는 소유자가 트랙을 공개하거나 비공개로 되돌린다.
+//
+// 공개 여부만 바꾼다. 공개해도 재생 URL은 여전히 서명이 필요하고 3시간 뒤
+// 만료된다. "공개"는 목록에 노출되고 남이 상세를 조회할 수 있다는 뜻이지
+// 서명 없이 파일을 받을 수 있다는 뜻이 아니다.
+func (s *Service) UpdateVisibility(ctx context.Context, input UpdateVisibilityInput) (Audio, error) {
+	if strings.TrimSpace(input.OwnerSubject) == "" {
+		return Audio{}, ErrUnauthorized
+	}
+	if input.Visibility != VisibilityPrivate && input.Visibility != VisibilityPublic {
+		return Audio{}, fmt.Errorf("%w: visibility must be private or public", ErrInvalidInput)
+	}
+
+	record, err := s.repository.GetAudio(ctx, input.AudioID)
+	if err != nil {
+		return Audio{}, err
+	}
+	// 남의 트랙은 공개 여부와 무관하게 바꿀 수 없다. 공개 트랙은 조회가
+	// 되므로 존재를 숨길 이유가 없어 Forbidden으로 답한다.
+	if record.OwnerSubject != input.OwnerSubject {
+		return Audio{}, ErrForbidden
+	}
+	if record.Visibility == input.Visibility {
+		return record, nil
+	}
+	return s.repository.UpdateVisibility(ctx, input.AudioID, input.Visibility, s.clock.Now().UTC())
 }
 
 // 커서는 클라이언트에게 불투명한 값이다. 정렬 기준이 바뀌어도 클라이언트를

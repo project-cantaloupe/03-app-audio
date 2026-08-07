@@ -28,6 +28,7 @@ func New(service *audio.Service, probe *health.Probe, logger *log.Logger) http.H
 	mux.HandleFunc("POST /v1/audios/{audio_id}/complete", h.completeUpload)
 	mux.HandleFunc("GET /v1/audios", h.listAudios)
 	mux.HandleFunc("GET /v1/audios/{audio_id}", h.getAudio)
+	mux.HandleFunc("PATCH /v1/audios/{audio_id}", h.updateAudio)
 	mux.HandleFunc("GET /v1/audios/{audio_id}/playback", h.getPlayback)
 	return requestLog(logger, mux)
 }
@@ -37,6 +38,10 @@ type createUploadRequest struct {
 	ContentType    string `json:"content_type"`
 	ContentLength  int64  `json:"content_length"`
 	ChecksumSHA256 string `json:"checksum_sha256"`
+}
+
+type updateAudioRequest struct {
+	Visibility string `json:"visibility"`
 }
 
 func (h *Handler) createUpload(w http.ResponseWriter, r *http.Request) {
@@ -76,8 +81,21 @@ func (h *Handler) listAudios(w http.ResponseWriter, r *http.Request) {
 		limit = parsed
 	}
 
+	// scope=public 은 공개 카탈로그다. 소유자를 가리지 않는 대신 저장소가
+	// public + READY 로 좁힌다. 기본값은 요청자 본인의 트랙이다.
+	scope := audio.ScopeOwner
+	switch raw := r.URL.Query().Get("scope"); raw {
+	case "", "owner":
+	case "public":
+		scope = audio.ScopePublic
+	default:
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "scope must be owner or public")
+		return
+	}
+
 	result, err := h.service.ListAudios(r.Context(), audio.ListAudiosInput{
 		OwnerSubject: subject(r),
+		Scope:        scope,
 		Limit:        limit,
 		Cursor:       r.URL.Query().Get("cursor"),
 	})
@@ -90,6 +108,24 @@ func (h *Handler) listAudios(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getAudio(w http.ResponseWriter, r *http.Request) {
 	result, err := h.service.GetAudio(r.Context(), subject(r), r.PathValue("audio_id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) updateAudio(w http.ResponseWriter, r *http.Request) {
+	var body updateAudioRequest
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
+		return
+	}
+	result, err := h.service.UpdateVisibility(r.Context(), audio.UpdateVisibilityInput{
+		OwnerSubject: subject(r),
+		AudioID:      r.PathValue("audio_id"),
+		Visibility:   audio.Visibility(body.Visibility),
+	})
 	if err != nil {
 		writeServiceError(w, err)
 		return

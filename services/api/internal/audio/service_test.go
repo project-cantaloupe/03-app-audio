@@ -12,10 +12,11 @@ type fakeRepository struct {
 	record Audio
 
 	// 목록 조회용. listResult를 그대로 돌려주고 받은 인자를 기록한다.
-	listResult []Audio
-	listOwner  string
-	listLimit  int
-	listCursor *ListCursor
+	listResult   []Audio
+	listOwner    string
+	listLimit    int
+	listCursor   *ListCursor
+	publicCalled bool
 }
 
 func (f *fakeRepository) CreateUpload(_ context.Context, record Audio) error {
@@ -34,6 +35,19 @@ func (f *fakeRepository) ListAudiosByOwner(_ context.Context, owner string, limi
 		return f.listResult[:limit], nil
 	}
 	return f.listResult, nil
+}
+func (f *fakeRepository) ListPublicAudios(_ context.Context, limit int, after *ListCursor) ([]Audio, error) {
+	f.publicCalled = true
+	f.listLimit, f.listCursor = limit, after
+	if len(f.listResult) > limit {
+		return f.listResult[:limit], nil
+	}
+	return f.listResult, nil
+}
+func (f *fakeRepository) UpdateVisibility(_ context.Context, id string, v Visibility, now time.Time) (Audio, error) {
+	f.record.Visibility = v
+	f.record.UpdatedAt = now
+	return f.record, nil
 }
 func (f *fakeRepository) MarkUploadVerified(_ context.Context, _ string, object SourceObject, _, _ string, now time.Time) (Audio, error) {
 	f.record.UploadVerified = true
@@ -380,5 +394,90 @@ func TestListAudiosReturnsEmptySliceNotNil(t *testing.T) {
 	}
 	if page.Items == nil {
 		t.Fatal("expected an empty slice, got nil")
+	}
+}
+
+// 공개 카탈로그는 소유자를 가리지 않는 별도 질의를 타야 한다. 소유자 질의를
+// 그대로 쓰면 남의 트랙이 영영 보이지 않는다.
+func TestListAudiosPublicScopeUsesCatalogQuery(t *testing.T) {
+	repository := &fakeRepository{}
+	if _, err := listService(repository).ListAudios(context.Background(), ListAudiosInput{
+		OwnerSubject: "owner", Scope: ScopePublic,
+	}); err != nil {
+		t.Fatalf("ListAudios() error = %v", err)
+	}
+	if !repository.publicCalled {
+		t.Fatal("public scope must not fall back to the owner query")
+	}
+	if repository.listOwner != "" {
+		t.Fatalf("public scope must not filter by owner, got %q", repository.listOwner)
+	}
+}
+
+func TestListAudiosDefaultScopeStaysOwnerOnly(t *testing.T) {
+	repository := &fakeRepository{}
+	if _, err := listService(repository).ListAudios(context.Background(), ListAudiosInput{
+		OwnerSubject: "owner",
+	}); err != nil {
+		t.Fatalf("ListAudios() error = %v", err)
+	}
+	if repository.publicCalled {
+		t.Fatal("default scope must not expose the public catalog")
+	}
+	if repository.listOwner != "owner" {
+		t.Fatalf("expected owner scope, got %q", repository.listOwner)
+	}
+}
+
+func visibilityService(repository *fakeRepository) *Service {
+	return NewService(repository, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{},
+		&sequenceIDs{}, fixedClock{value: time.Date(2026, 8, 6, 15, 0, 0, 0, time.UTC)},
+		"cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+}
+
+func TestUpdateVisibilityPublishesOwnedAudio(t *testing.T) {
+	repository := &fakeRepository{record: Audio{
+		ID: "audio-id", OwnerSubject: "owner", Visibility: VisibilityPrivate, Status: StatusReady,
+	}}
+	result, err := visibilityService(repository).UpdateVisibility(context.Background(), UpdateVisibilityInput{
+		OwnerSubject: "owner", AudioID: "audio-id", Visibility: VisibilityPublic,
+	})
+	if err != nil {
+		t.Fatalf("UpdateVisibility() error = %v", err)
+	}
+	if result.Visibility != VisibilityPublic {
+		t.Fatalf("expected public, got %s", result.Visibility)
+	}
+}
+
+// 남의 트랙을 공개해버리면 소유자가 의도하지 않은 노출이 생긴다.
+func TestUpdateVisibilityRejectsNonOwner(t *testing.T) {
+	repository := &fakeRepository{record: Audio{
+		ID: "audio-id", OwnerSubject: "someone-else", Visibility: VisibilityPrivate,
+	}}
+	_, err := visibilityService(repository).UpdateVisibility(context.Background(), UpdateVisibilityInput{
+		OwnerSubject: "owner", AudioID: "audio-id", Visibility: VisibilityPublic,
+	})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestUpdateVisibilityRejectsUnknownValue(t *testing.T) {
+	repository := &fakeRepository{record: Audio{ID: "audio-id", OwnerSubject: "owner"}}
+	_, err := visibilityService(repository).UpdateVisibility(context.Background(), UpdateVisibilityInput{
+		OwnerSubject: "owner", AudioID: "audio-id", Visibility: Visibility("unlisted"),
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}
+
+func TestUpdateVisibilityRequiresSubject(t *testing.T) {
+	_, err := visibilityService(&fakeRepository{}).UpdateVisibility(context.Background(), UpdateVisibilityInput{
+		AudioID: "audio-id", Visibility: VisibilityPublic,
+	})
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
 	}
 }

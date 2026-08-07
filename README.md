@@ -40,31 +40,38 @@ CI가 푸시    …ts.net/library/app-audio-{api,web,worker}
 k8s가 pull   ghcr.io/project-cantaloupe/audio-{api,web,worker}:dev
 ```
 
-레지스트리와 이미지 이름이 모두 달라서, 현재 배포에 반영하려면 GHCR로 직접
-빌드·푸시해야 한다.
+레지스트리와 이미지 이름이 모두 달라서, 두 경로가 하나로 합쳐지기 전까지는
+GHCR로 직접 빌드·푸시해야 배포에 반영된다.
 
 ```bash
 docker buildx build --platform linux/amd64 \
   -t ghcr.io/project-cantaloupe/audio-api:dev --push services/api
 
-# ⚠️ web은 --build-arg 가 필수다. 빼면 authService가 세션을 만들지 못해
-#    업로드 화면이 "An authenticated session is required"로 막힌다.
 docker buildx build --platform linux/amd64 \
   --build-arg VITE_DEV_SUBJECT=browser-tester \
   -t ghcr.io/project-cantaloupe/audio-web:dev --push services/web
 ```
 
-`import.meta.env` 값은 빌드 시점에 번들로 굳는다. 런타임 ConfigMap이 아니다.
-
 매니페스트의 `imagePullPolicy`가 `Always`이므로 푸시 후 `rollout restart`로
 새 이미지를 받는다.
 
-**빌드 전에 브랜치를 확인한다.** 낡은 브랜치에서 빌드하면 푸시도 되고 digest도
-바뀌지만 내용이 옛 코드다.
+### Web 빌드 인자
 
-```bash
-git rev-parse --abbrev-ref HEAD && git rev-list --count HEAD..origin/main
+**Vite는 `import.meta.env` 값을 빌드 시점에 번들로 굳힌다.** 런타임 환경변수나
+ConfigMap이 아니므로, 빌드할 때 넘기지 않으면 이미지에 값이 없다.
+
 ```
+VITE_AUTH_MODE     기본 development
+VITE_DEV_SUBJECT   개발용 subject. 비면 authService가 세션을 만들지 못해
+                   업로드 화면이 "An authenticated session is required"로 막힌다
+VITE_API_BASE_URL  비우면 같은 출처로 호출한다
+```
+
+수동 빌드와 CI 모두 같은 값을 넘겨야 한다. CI는 `.github/workflows/deploy.yml`이
+저장소 Variables에서 읽는다.
+
+Keycloak OIDC가 붙으면 `VITE_DEV_SUBJECT` 대신 `VITE_AUTH_MODE=oidc`와 issuer,
+client id를 넘긴다.
 
 ## API
 

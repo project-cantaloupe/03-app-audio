@@ -33,7 +33,7 @@ jobs:
           HARBOR_USER: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASS: ${{ secrets.HARBOR_PASSWORD }}
         run: |
-          # 1) Tailscale IP 사전 추출 후 /etc/hosts 강제 등록 (docker login 멈춤 방지)
+          # 1) Tailscale IP 사전 추출 후 /etc/hosts 강제 등록 (DNS resolution 지원)
           HARBOR_IP=$(getent hosts cntlp-onp-wk-01.tail270b85.ts.net | awk '{ print $1 }')
           echo "Resolved Harbor IP: $HARBOR_IP"
           if [ -n "$HARBOR_IP" ]; then
@@ -56,8 +56,8 @@ jobs:
             sleep 3
           done
           
-          # 4) --password-stdin 방식으로 보안 경고 해결 및 특수문자 파싱 오류 차단
-          echo "$HARBOR_PASS" | docker login ${{ env.HARBOR_REGISTRY }} -u "$HARBOR_USER" --password-stdin
+          # 4) 특수문자 왜곡 방지를 위한 printf 파이프 로그인
+          printf '%s\n' "$HARBOR_PASS" | docker login ${{ env.HARBOR_REGISTRY }} --username "$HARBOR_USER" --password-stdin
 
       # 4-1. API 서비스 빌드 및 푸시
       - name: Build and Push API Service
@@ -69,14 +69,6 @@ jobs:
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api --all-tags
 
       # 4-2. Web 서비스 빌드 및 푸시
-      #
-      # ⚠️ Vite는 import.meta.env 값을 빌드 시점에 번들로 굳힌다. 런타임
-      #    환경변수나 ConfigMap이 아니다. --build-arg 를 빼면 authService가
-      #    세션을 만들지 못해 업로드 화면이 "An authenticated session is
-      #    required"로 막힌 이미지가 나온다.
-      #
-      #    Keycloak OIDC가 붙으면 VITE_DEV_SUBJECT 대신 VITE_AUTH_MODE=oidc 와
-      #    issuer, client id 를 넘긴다.
       - name: Build and Push Web Service
         run: |
           docker build \

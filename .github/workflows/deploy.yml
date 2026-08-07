@@ -7,7 +7,7 @@ on:
     branches: [ "main", "master" ]
 
 env:
-  HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net:32432
+  HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net
   HARBOR_PROJECT: library
 
 jobs:
@@ -41,22 +41,10 @@ jobs:
             echo "$HARBOR_IP cntlp-onp-wk-01.tail270b85.ts.net" | sudo tee -a /etc/hosts
           fi
 
-          # 2) Insecure Registry 설정 및 도커 재시작
-          sudo mkdir -p /etc/docker
-          cat <<EOF | sudo tee /etc/docker/daemon.json
-          {
-            "insecure-registries": [
-              "${{ env.HARBOR_REGISTRY }}"
-            ]
-          }
-          EOF
-
-          sudo systemctl restart docker
-
-          # 3) Harbor 네트워크 연결 가용성 확인
+          # 2) Harbor HTTPS 연결 가용성 확인
           echo "Waiting for Harbor..."
           for i in {1..10}; do
-            if curl -s --connect-timeout 2 http://${{ env.HARBOR_REGISTRY }}/v2/ >/dev/null; then
+            if curl -s --connect-timeout 2 https://${{ env.HARBOR_REGISTRY }}/v2/ >/dev/null; then
               echo "Harbor network is ready!"
               break
             fi
@@ -64,7 +52,7 @@ jobs:
             sleep 3
           done
 
-          # 4) Harbor 로그인
+          # 3) Harbor 로그인
           printf '%s' "$PASSWORD" | docker login \
             "${{ env.HARBOR_REGISTRY }}" \
             --username "$USERNAME" \

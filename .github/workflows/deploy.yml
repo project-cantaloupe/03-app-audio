@@ -27,45 +27,72 @@ jobs:
           tags: tag:ci
           hostname: github-runner-${{ github.run_id }}
 
-      # 3. Docker Daemon Insecure 설정, IP 강제 매핑 및 CLI 로그인
-      - name: Configure Docker & Log in to Harbor
+      # 3. Docker 설정
+      - name: Configure Docker
         run: |
-          # 1) Tailscale IP 사전 추출 후 /etc/hosts 강제 등록 (DNS resolution 지원)
           HARBOR_IP=$(getent hosts cntlp-onp-wk-01.tail270b85.ts.net | awk '{ print $1 }')
           echo "Resolved Harbor IP: $HARBOR_IP"
+
           if [ -n "$HARBOR_IP" ]; then
             echo "$HARBOR_IP cntlp-onp-wk-01.tail270b85.ts.net" | sudo tee -a /etc/hosts
           fi
 
-          # 2) Insecure Registry 설정 및 도커 재시작
           sudo mkdir -p /etc/docker
-          echo '{"insecure-registries": ["'${{ env.HARBOR_REGISTRY }}'"]}' | sudo tee /etc/docker/daemon.json
+
+          cat <<EOF | sudo tee /etc/docker/daemon.json
+          {
+            "insecure-registries": [
+              "${{ env.HARBOR_REGISTRY }}"
+            ]
+          }
+          EOF
+
           sudo systemctl restart docker
-          
-          # 3) Tailscale 네트워크 가용성 확인 (최대 30초 대기)
-          echo "Waiting for Tailscale network routing to Harbor..."
+
+          echo "Waiting for Harbor..."
+
           for i in {1..10}; do
-            if curl -s --connect-timeout 2 http://${{ env.HARBOR_REGISTRY }}/v2/ > /dev/null 2>&1; then
+            if curl -s --connect-timeout 2 http://${{ env.HARBOR_REGISTRY }}/v2/ >/dev/null; then
               echo "Harbor network is ready!"
               break
             fi
-            echo "Retrying Harbor connection ($i/10)..."
+
+            echo "Retry $i..."
             sleep 3
           done
-          
-          # 4) 특수문자 변형 방지를 위한 GitHub Context 직접 주입 & 개행 제거 로그인
-          printf '%s' '${{ secrets.HARBOR_PASSWORD }}' | docker login ${{ env.HARBOR_REGISTRY }} --username '${{ secrets.HARBOR_USERNAME }}' --password-stdin
 
-      # 4-1. API 서비스 빌드 및 푸시
+      # 4. Secret 확인 (비밀번호는 출력 안됨)
+      - name: Debug Harbor Secrets
+        env:
+          USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: |
+          echo "Username=[$USERNAME]"
+          echo "Username length=$(printf '%s' "$USERNAME" | wc -c)"
+          echo "Password length=$(printf '%s' "$PASSWORD" | wc -c)"
+
+      # 5. Harbor 로그인
+      - name: Login Harbor
+        env:
+          USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: |
+          printf '%s' "$PASSWORD" | docker login \
+            "${{ env.HARBOR_REGISTRY }}" \
+            --username "$USERNAME" \
+            --password-stdin
+
+      # 6. API
       - name: Build and Push API Service
         run: |
           docker build \
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:latest \
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }} \
             -f ./services/api/Dockerfile ./services/api
+
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api --all-tags
 
-      # 4-2. Web 서비스 빌드 및 푸시
+      # 7. Web
       - name: Build and Push Web Service
         run: |
           docker build \
@@ -75,13 +102,15 @@ jobs:
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web:latest \
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web:${{ github.sha }} \
             -f ./services/web/Dockerfile ./services/web
+
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-web --all-tags
 
-      # 4-3. Worker 서비스 빌드 및 푸시
+      # 8. Worker
       - name: Build and Push Worker Service
         run: |
           docker build \
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker:latest \
             -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker:${{ github.sha }} \
             -f ./services/worker/Dockerfile ./services/worker
+
           docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-worker --all-tags

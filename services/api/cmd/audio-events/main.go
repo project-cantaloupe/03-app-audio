@@ -23,7 +23,7 @@ import (
 )
 
 func main() {
-	logger := log.New(os.Stdout, "audio-events ", log.LstdFlags|log.LUTC)
+	logger := log.New(os.Stdout, "", 0)
 	if err := run(context.Background(), logger); err != nil {
 		logger.Fatal(err)
 	}

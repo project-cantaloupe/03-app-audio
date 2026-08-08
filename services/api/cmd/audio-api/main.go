@@ -28,7 +28,10 @@ import (
 )
 
 func main() {
-	logger := log.New(os.Stdout, "audio-api ", log.LstdFlags|log.LUTC)
+	// JSON business events are written directly by internal/observability.
+	// Leave ordinary operational messages as plain text without a prefix so a
+	// JSON line is still valid JSON for Fluent Bit's Merge_Log parser.
+	logger := log.New(os.Stdout, "", 0)
 	if err := run(context.Background(), logger); err != nil {
 		logger.Fatal(err)
 	}

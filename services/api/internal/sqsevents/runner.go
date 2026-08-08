@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/events"
+	"github.com/project-cantaloupe/app-audio/services/api/internal/observability"
 )
 
 type Repository interface {
@@ -55,9 +56,15 @@ func (r *Runner) ConsumeScanResults(ctx context.Context) error {
 		if err := result.Validate(); err != nil {
 			return err
 		}
-		return r.repository.ProcessScanResult(
+		err := r.repository.ProcessScanResult(
 			ctx, result, r.ids.New(), r.ids.New(), r.clock.Now().UTC(),
 		)
+		if err == nil {
+			observability.Event(r.logger, "info", "scan_result_processed", "scan result processed", map[string]any{
+				"status": result.Status,
+			})
+		}
+		return err
 	})
 }
 
@@ -70,9 +77,24 @@ func (r *Runner) ConsumeTranscodeResults(ctx context.Context) error {
 		if err := result.Validate(); err != nil {
 			return err
 		}
-		return r.repository.ProcessTranscodeResult(
+		err := r.repository.ProcessTranscodeResult(
 			ctx, result, r.maximumAttempts, r.clock.Now().UTC(),
 		)
+		if err == nil {
+			fields := map[string]any{
+				"job_id": result.JobID, "audio_id": result.AudioID,
+				"status": result.Status, "attempt": result.Attempt,
+				"retry_count": max(result.Attempt-1, 0),
+			}
+			if result.Status == "SUCCEEDED" {
+				fields["audio_duration_ms"] = result.DurationMS
+			} else if result.Error != nil {
+				fields["error_code"] = result.Error.Code
+				fields["retryable"] = result.Error.Retryable
+			}
+			observability.Event(r.logger, "info", "transcode_result_processed", "transcode result processed", fields)
+		}
+		return err
 	})
 }
 

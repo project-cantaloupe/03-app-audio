@@ -11,6 +11,7 @@ import (
 
 	"github.com/project-cantaloupe/app-audio/services/api/internal/audio"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/health"
+	"github.com/project-cantaloupe/app-audio/services/api/internal/observability"
 )
 
 type Handler struct {
@@ -60,6 +61,10 @@ func (h *Handler) createUpload(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
+	observability.Event(h.logger, "info", "upload_session_created", "upload session created", map[string]any{
+		"audio_id": result.AudioID, "input_bytes": body.ContentLength,
+		"content_type": body.ContentType, "visibility": body.Visibility,
+	})
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -69,6 +74,9 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
+	observability.Event(h.logger, "info", "upload_completed", "uploaded source accepted", map[string]any{
+		"audio_id": result.ID, "status": result.Status, "input_bytes": result.SourceSize,
+	})
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -205,7 +213,20 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func requestLog(logger *log.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger.Printf("http request method=%s path=%s", r.Method, r.URL.Path)
-		next.ServeHTTP(w, r)
+		recorder := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(recorder, r)
+		observability.Event(logger, "info", "http_request_completed", "http request completed", map[string]any{
+			"http_method": r.Method, "http_route": r.URL.Path, "http_status": recorder.status,
+		})
 	})
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *responseRecorder) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
 }

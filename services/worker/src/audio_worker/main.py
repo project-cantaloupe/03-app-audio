@@ -13,6 +13,7 @@ import boto3
 from prometheus_client import start_http_server
 
 from .contracts import ContractError, TranscodeJob
+from .log_format import JSONFormatter
 from .metrics import COMPLETED, DURATION, FAILED, IN_PROGRESS, RETRIED
 from .processor import Processor, ProcessorConfig, WorkerError, encode_result, result_event
 
@@ -94,18 +95,36 @@ class Worker:
         )
         heartbeat.start()
         try:
-            event = self._processor.process(job, attempt)
-            self._publish(event)
+            processed = self._processor.process(job, attempt)
+            self._publish(processed.event)
             self._delete(receipt)
             COMPLETED.inc()
-            LOGGER.info("transcode completed", extra={"job_id": job.job_id, "attempt": attempt})
+            LOGGER.info(
+                "transcode completed",
+                extra={
+                    "event_type": "transcode_completed",
+                    "status": "success",
+                    "job_id": job.job_id,
+                    "audio_id": job.audio_id,
+                    "attempt": attempt,
+                    "retry_count": max(attempt - 1, 0),
+                    "audio_duration_ms": processed.event["duration_ms"],
+                    "processing_duration_ms": round((time.monotonic() - started) * 1000),
+                    "input_bytes": processed.input_bytes,
+                    "output_bytes": processed.output_bytes,
+                },
+            )
         except WorkerError as error:
             FAILED.labels(error_code=error.code, retryable=str(error.retryable).lower()).inc()
             LOGGER.error(
                 "transcode failed",
                 extra={
+                    "event_type": "transcode_failed",
+                    "status": "failed",
                     "job_id": job.job_id,
+                    "audio_id": job.audio_id,
                     "attempt": attempt,
+                    "retry_count": max(attempt - 1, 0),
                     "error_code": error.code,
                     "retryable": error.retryable,
                 },
@@ -127,7 +146,16 @@ class Worker:
             FAILED.labels(error_code="WORKER_INTERNAL_ERROR", retryable="true").inc()
             LOGGER.exception(
                 "transcode attempt interrupted",
-                extra={"job_id": job.job_id, "attempt": attempt},
+                extra={
+                    "event_type": "transcode_failed",
+                    "status": "failed",
+                    "job_id": job.job_id,
+                    "audio_id": job.audio_id,
+                    "attempt": attempt,
+                    "retry_count": max(attempt - 1, 0),
+                    "error_code": "WORKER_INTERNAL_ERROR",
+                    "retryable": True,
+                },
             )
         finally:
             heartbeat.stop()
@@ -176,10 +204,12 @@ class VisibilityHeartbeat:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO"),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    handler = logging.StreamHandler()
+    handler.setFormatter(JSONFormatter())
+    LOGGER.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+    LOGGER.handlers.clear()
+    LOGGER.addHandler(handler)
+    LOGGER.propagate = False
     config = Config.from_environment()
     session = boto3.session.Session(region_name=config.aws_region)
     sqs = session.client("sqs", endpoint_url=os.getenv("AWS_ENDPOINT_URL") or None)
@@ -195,7 +225,10 @@ def main() -> None:
     signal.signal(signal.SIGTERM, worker.stop)
     signal.signal(signal.SIGINT, worker.stop)
     start_http_server(config.metrics_port)
-    LOGGER.info("audio worker started", extra={"metrics_port": config.metrics_port})
+    LOGGER.info(
+        "audio worker started",
+        extra={"event_type": "worker_started", "status": "ready", "metrics_port": config.metrics_port},
+    )
     worker.run()
 
 

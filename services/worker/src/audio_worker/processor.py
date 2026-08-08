@@ -29,12 +29,21 @@ class ProcessorConfig:
     clean_tag_value: str = "NO_THREATS_FOUND"
 
 
+@dataclass(frozen=True)
+class ProcessedTranscode:
+    """Queue result plus non-contract telemetry for the local application log."""
+
+    event: dict[str, Any]
+    input_bytes: int
+    output_bytes: int
+
+
 class Processor:
     def __init__(self, s3_client: Any, config: ProcessorConfig) -> None:
         self._s3 = s3_client
         self._config = config
 
-    def process(self, job: TranscodeJob, attempt: int) -> dict[str, Any]:
+    def process(self, job: TranscodeJob, attempt: int) -> ProcessedTranscode:
         self._verify_source(job)
         playback_key = f"audios/{job.audio_id}/artifacts/{job.job_id}/playback.mp3"
         waveform_key = f"audios/{job.audio_id}/artifacts/{job.job_id}/waveform.json"
@@ -85,16 +94,20 @@ class Processor:
             except Exception as error:
                 raise WorkerError("ARTIFACT_UPLOAD_FAILED", retryable=True) from error
 
-        return result_event(
-            job,
-            attempt,
-            status="SUCCEEDED",
-            duration_ms=media.duration_ms,
-            artifacts={
-                "bucket": self._config.artifact_bucket,
-                "playback_key": playback_key,
-                "waveform_key": waveform_key,
-            },
+        return ProcessedTranscode(
+            event=result_event(
+                job,
+                attempt,
+                status="SUCCEEDED",
+                duration_ms=media.duration_ms,
+                artifacts={
+                    "bucket": self._config.artifact_bucket,
+                    "playback_key": playback_key,
+                    "waveform_key": waveform_key,
+                },
+            ),
+            input_bytes=source_path.stat().st_size,
+            output_bytes=playback_path.stat().st_size,
         )
 
     def _verify_source(self, job: TranscodeJob) -> None:

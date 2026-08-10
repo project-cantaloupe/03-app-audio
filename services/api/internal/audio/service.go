@@ -182,7 +182,9 @@ func (s *Service) CompleteUpload(ctx context.Context, ownerSubject, audioID stri
 // 처리 중인 트랙도 함께 반환한다. 업로드 직후 SCANNING 상태가 목록에서 사라지면
 // 사용자는 업로드가 실패했다고 판단하게 된다.
 func (s *Service) ListAudios(ctx context.Context, input ListAudiosInput) (AudioPage, error) {
-	if strings.TrimSpace(input.OwnerSubject) == "" {
+	// 공개 카탈로그는 로그인하지 않은 청취자도 조회할 수 있다. 소유자 목록만
+	// 요청자 식별이 필요하며, public + READY 필터는 Repository가 강제한다.
+	if input.Scope != ScopePublic && strings.TrimSpace(input.OwnerSubject) == "" {
 		return AudioPage{}, ErrUnauthorized
 	}
 

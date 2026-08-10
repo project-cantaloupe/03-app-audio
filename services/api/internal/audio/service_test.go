@@ -279,7 +279,7 @@ func listService(repository *fakeRepository) *Service {
 		&sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 }
 
-func TestListAudiosRequiresSubject(t *testing.T) {
+func TestListAudiosOwnerScopeRequiresSubject(t *testing.T) {
 	_, err := listService(&fakeRepository{}).ListAudios(context.Background(), ListAudiosInput{})
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("expected ErrUnauthorized, got %v", err)
@@ -397,12 +397,12 @@ func TestListAudiosReturnsEmptySliceNotNil(t *testing.T) {
 	}
 }
 
-// 공개 카탈로그는 소유자를 가리지 않는 별도 질의를 타야 한다. 소유자 질의를
-// 그대로 쓰면 남의 트랙이 영영 보이지 않는다.
+// 공개 카탈로그는 인증 없이 소유자를 가리지 않는 별도 질의를 타야 한다.
+// 소유자 질의를 그대로 쓰면 비로그인 청취자가 Discover를 볼 수 없다.
 func TestListAudiosPublicScopeUsesCatalogQuery(t *testing.T) {
 	repository := &fakeRepository{}
 	if _, err := listService(repository).ListAudios(context.Background(), ListAudiosInput{
-		OwnerSubject: "owner", Scope: ScopePublic,
+		Scope: ScopePublic,
 	}); err != nil {
 		t.Fatalf("ListAudios() error = %v", err)
 	}

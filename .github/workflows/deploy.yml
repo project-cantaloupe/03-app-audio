@@ -1,25 +1,98 @@
-name: CI Pipeline for app-audio
+name: CI/CD Pipeline for app-audio
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [main]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [main]
+
+# A deployment must finish in commit order so an older run cannot overwrite a
+# newer image tag in the GitOps repository.
+concurrency:
+  group: app-audio-delivery-main
+  cancel-in-progress: false
 
 env:
-  HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net:32432
+  HARBOR_REGISTRY: cntlp-onp-wk-01.tail270b85.ts.net
   HARBOR_PROJECT: library
+  MANIFESTS_REPOSITORY: project-cantaloupe/02-k8s-manifests
 
 jobs:
-  build-and-push:
+  validate:
+    name: Validate
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
     steps:
-      # 1. 저장소 소스코드 체크아웃
-      - name: Checkout Repository
+      - name: Check out application source
         uses: actions/checkout@v4
 
-      # 2. Tailscale VPN 연결
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+          cache-dependency-path: services/api/go.sum
+
+      - name: Test API
+        working-directory: services/api
+        run: go test ./...
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Test and lint worker
+        working-directory: services/worker
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install '.[dev]'
+          pytest -q
+          ruff check src tests
+          ruff format --check src tests
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/web/package-lock.json
+
+      - name: Build web application
+        working-directory: services/web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Validate shared schemas and whitespace
+        run: |
+          python -m json.tool shared/schema/transcode-job.json >/dev/null
+          python -m json.tool shared/schema/transcode-result.json >/dev/null
+          python -m json.tool shared/schema/scan-result.json >/dev/null
+          git diff --check
+
+  publish-and-promote:
+    name: Publish images and promote GitOps manifests
+    needs: validate
+    # Pull requests must never receive registry or cross-repository write
+    # credentials. Only a successful main push is promotable.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out application source
+        uses: actions/checkout@v4
+
+      - name: Verify delivery secrets are configured
+        env:
+          MANIFESTS_TOKEN: ${{ secrets.MANIFESTS_TOKEN }}
+        run: |
+          if [ -z "$MANIFESTS_TOKEN" ]; then
+            echo "MANIFESTS_TOKEN must be configured before publishing images."
+            exit 1
+          fi
+
       - name: Connect to Tailscale
         uses: tailscale/github-action@v3
         with:
@@ -27,81 +100,96 @@ jobs:
           tags: tag:ci
           hostname: github-runner-${{ github.run_id }}
 
-      # 3. Docker 설정 및 Harbor 로그인
-      - name: Configure Docker & Login to Harbor
+      - name: Log in to Harbor
         env:
-          USERNAME: ${{ secrets.HARBOR_USERNAME }}
-          PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
         run: |
-          # 1) Tailscale IP 사전 추출 후 /etc/hosts 강제 등록
-          HARBOR_IP=$(getent hosts cntlp-onp-wk-01.tail270b85.ts.net | awk '{ print $1 }')
-          echo "Resolved Harbor IP: $HARBOR_IP"
+          set -euo pipefail
+          printf '%s' "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" \
+            --username "$HARBOR_USERNAME" --password-stdin
 
-          if [ -n "$HARBOR_IP" ]; then
-            echo "$HARBOR_IP cntlp-onp-wk-01.tail270b85.ts.net" | sudo tee -a /etc/hosts
-          fi
-
-          # 2) Insecure Registry 설정 및 도커 재시작
-          sudo mkdir -p /etc/docker
-          cat <<EOF | sudo tee /etc/docker/daemon.json
-          {
-            "insecure-registries": [
-              "${{ env.HARBOR_REGISTRY }}"
-            ]
-          }
-          EOF
-
-          sudo systemctl restart docker
-
-          # 3) Harbor 네트워크 연결 가용성 확인
-          echo "Waiting for Harbor..."
-          for i in {1..10}; do
-            if curl -s --connect-timeout 2 http://${{ env.HARBOR_REGISTRY }}/v2/ >/dev/null; then
-              echo "Harbor network is ready!"
-              break
-            fi
-            echo "Retry $i..."
-            sleep 3
-          done
-
-          # 4) Harbor 로그인
-          printf '%s' "$PASSWORD" | docker login \
-            "${{ env.HARBOR_REGISTRY }}" \
-            --username "$USERNAME" \
-            --password-stdin
-
-      # 4. API 서비스 빌드 및 푸시
-      - name: Build and Push API Service
+      - name: Build and push API image
         run: |
-          docker build \
-            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:latest \
-            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }} \
-            -f ./services/api/Dockerfile ./services/api
+          set -euo pipefail
+          image="$HARBOR_REGISTRY/$HARBOR_PROJECT/app-audio-api:${GITHUB_SHA}"
+          docker build --tag "$image" --file services/api/Dockerfile services/api
+          docker push "$image"
 
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:latest
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/app-audio-api:${{ github.sha }}
-
-      # 5. Web 서비스 빌드 및 푸시
-      - name: Build and Push Web Service
+      - name: Build and push web image
         run: |
+          set -euo pipefail
+          image="$HARBOR_REGISTRY/$HARBOR_PROJECT/web:${GITHUB_SHA}"
           docker build \
             --build-arg VITE_DEV_SUBJECT="${{ vars.VITE_DEV_SUBJECT }}" \
             --build-arg VITE_AUTH_MODE="${{ vars.VITE_AUTH_MODE || 'development' }}" \
             --build-arg VITE_API_BASE_URL="${{ vars.VITE_API_BASE_URL }}" \
-            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:latest \
-            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:${{ github.sha }} \
-            -f ./services/web/Dockerfile ./services/web
+            --tag "$image" --file services/web/Dockerfile services/web
+          docker push "$image"
 
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:latest
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/web:${{ github.sha }}
-
-      # 6. Worker 서비스 빌드 및 푸시
-      - name: Build and Push Worker Service
+      - name: Build and push worker image
         run: |
-          docker build \
-            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:latest \
-            -t ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:${{ github.sha }} \
-            -f ./services/worker/Dockerfile ./services/worker
+          set -euo pipefail
+          image="$HARBOR_REGISTRY/$HARBOR_PROJECT/worker:${GITHUB_SHA}"
+          docker build --tag "$image" --file services/worker/Dockerfile services/worker
+          docker push "$image"
 
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:latest
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.HARBOR_PROJECT }}/worker:${{ github.sha }}
+      - name: Check out GitOps manifests
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MANIFESTS_REPOSITORY }}
+          token: ${{ secrets.MANIFESTS_TOKEN }}
+          path: manifests
+          persist-credentials: true
+
+      - name: Update image tags
+        working-directory: manifests
+        run: |
+          set -euo pipefail
+          for file in \
+            apps/audio/api/kustomization.yaml \
+            apps/audio/web/kustomization.yaml \
+            apps/audio/worker/kustomization.yaml; do
+            sed -i -E "s#^(    newTag: ).*#\\1${GITHUB_SHA}#" "$file"
+          done
+          git diff --check
+
+      - name: Create GitOps promotion pull request
+        id: promotion
+        working-directory: manifests
+        env:
+          GH_TOKEN: ${{ secrets.MANIFESTS_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="ci/promote-audio-${GITHUB_SHA}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git add apps/audio/api/kustomization.yaml \
+            apps/audio/web/kustomization.yaml \
+            apps/audio/worker/kustomization.yaml
+          git commit -m "chore(audio): promote ${GITHUB_SHA}"
+          git push --force-with-lease origin "$branch"
+
+          pr_url="$(gh pr list --base main --head "$branch" --state open \
+            --json url --jq '.[0].url')"
+          if [ -z "$pr_url" ]; then
+            pr_url="$(gh pr create --base main --head "$branch" \
+              --title "chore(audio): promote ${GITHUB_SHA}" \
+              --body "Promotes the Harbor images built from ${GITHUB_SHA}.")"
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+
+      - name: Enable automatic merge for GitOps promotion
+        if: steps.promotion.outputs.changed == 'true'
+        working-directory: manifests
+        env:
+          GH_TOKEN: ${{ secrets.MANIFESTS_TOKEN }}
+        run: gh pr merge "${{ steps.promotion.outputs.pr_url }}" --auto --squash --delete-branch

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -8,7 +9,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/audio"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/health"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/observability"
@@ -62,6 +65,7 @@ func (h *Handler) createUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	observability.Event(h.logger, "info", "upload_session_created", "upload session created", map[string]any{
+		"status": "pending", "request_id": requestID(r.Context()),
 		"audio_id": result.AudioID, "input_bytes": body.ContentLength,
 		"content_type": body.ContentType, "visibility": body.Visibility,
 	})
@@ -75,7 +79,8 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	observability.Event(h.logger, "info", "upload_completed", "uploaded source accepted", map[string]any{
-		"audio_id": result.ID, "status": result.Status, "input_bytes": result.SourceSize,
+		"request_id": requestID(r.Context()), "audio_id": result.ID,
+		"status": result.Status, "input_bytes": result.SourceSize,
 	})
 	writeJSON(w, http.StatusOK, result)
 }
@@ -213,12 +218,42 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func requestLog(logger *log.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		id := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if _, err := uuid.Parse(id); err != nil {
+			id = uuid.NewString()
+		}
+		w.Header().Set("X-Request-ID", id)
+		r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, id))
 		recorder := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(recorder, r)
-		observability.Event(logger, "info", "http_request_completed", "http request completed", map[string]any{
-			"http_method": r.Method, "http_route": r.URL.Path, "http_status": recorder.status,
+
+		level, status := "info", "success"
+		if recorder.status >= http.StatusInternalServerError {
+			level, status = "error", "failed"
+		} else if recorder.status >= http.StatusBadRequest {
+			level, status = "warning", "rejected"
+		}
+		route := r.Pattern
+		if _, pattern, found := strings.Cut(route, " "); found {
+			route = pattern
+		}
+		if route == "" {
+			route = r.URL.Path
+		}
+		observability.Event(logger, level, "http_request_completed", "http request completed", map[string]any{
+			"status": status, "request_id": id,
+			"http_method": r.Method, "http_route": route, "http_status": recorder.status,
+			"processing_duration_ms": time.Since(started).Milliseconds(),
 		})
 	})
+}
+
+type requestIDContextKey struct{}
+
+func requestID(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDContextKey{}).(string)
+	return id
 }
 
 type responseRecorder struct {

@@ -59,12 +59,16 @@ func (r *Runner) ConsumeScanResults(ctx context.Context) error {
 		err := r.repository.ProcessScanResult(
 			ctx, result, r.ids.New(), r.ids.New(), r.clock.Now().UTC(),
 		)
-		if err == nil {
-			observability.Event(r.logger, "info", "scan_result_processed", "scan result processed", map[string]any{
-				"status": result.Status,
+		if err != nil {
+			observability.Event(r.logger, "error", "scan_result_failed", "scan result processing failed", map[string]any{
+				"status": "failed", "error_code": "SCAN_RESULT_PROCESSING_FAILED", "retryable": true,
 			})
+			return err
 		}
-		return err
+		observability.Event(r.logger, "info", "scan_result_processed", "scan result processed", map[string]any{
+			"status": result.Status,
+		})
+		return nil
 	})
 }
 
@@ -80,21 +84,30 @@ func (r *Runner) ConsumeTranscodeResults(ctx context.Context) error {
 		err := r.repository.ProcessTranscodeResult(
 			ctx, result, r.maximumAttempts, r.clock.Now().UTC(),
 		)
-		if err == nil {
-			fields := map[string]any{
-				"job_id": result.JobID, "audio_id": result.AudioID,
-				"status": result.Status, "attempt": result.Attempt,
-				"retry_count": max(result.Attempt-1, 0),
-			}
-			if result.Status == "SUCCEEDED" {
-				fields["audio_duration_ms"] = result.DurationMS
-			} else if result.Error != nil {
-				fields["error_code"] = result.Error.Code
-				fields["retryable"] = result.Error.Retryable
-			}
-			observability.Event(r.logger, "info", "transcode_result_processed", "transcode result processed", fields)
+		fields := map[string]any{
+			"job_id": result.JobID, "audio_id": result.AudioID,
+			"status": result.Status, "attempt": result.Attempt,
+			"retry_count": max(result.Attempt-1, 0),
 		}
-		return err
+		if result.Status == "SUCCEEDED" {
+			fields["audio_duration_ms"] = result.DurationMS
+		} else if result.Error != nil {
+			fields["error_code"] = result.Error.Code
+			fields["retryable"] = result.Error.Retryable
+		}
+		if err != nil {
+			fields["status"] = "failed"
+			fields["error_code"] = "TRANSCODE_RESULT_PROCESSING_FAILED"
+			fields["retryable"] = true
+			observability.Event(r.logger, "error", "transcode_result_failed", "transcode result processing failed", fields)
+			return err
+		}
+		level := "info"
+		if result.Status == "FAILED" {
+			level = "error"
+		}
+		observability.Event(r.logger, level, "transcode_result_processed", "transcode result processed", fields)
+		return nil
 	})
 }
 

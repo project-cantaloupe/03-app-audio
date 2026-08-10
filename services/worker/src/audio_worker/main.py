@@ -227,7 +227,11 @@ def main() -> None:
     start_http_server(config.metrics_port)
     LOGGER.info(
         "audio worker started",
-        extra={"event_type": "worker_started", "status": "ready", "metrics_port": config.metrics_port},
+        extra={
+            "event_type": "worker_started",
+            "status": "ready",
+            "metrics_port": config.metrics_port,
+        },
     )
     worker.run()
 

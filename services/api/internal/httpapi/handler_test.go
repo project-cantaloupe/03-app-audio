@@ -41,6 +41,25 @@ func TestRequiredAuthenticationRejectsAnonymousRequest(t *testing.T) {
 	}
 }
 
+func TestDisabledAuthenticationRejectsForgedCredentials(t *testing.T) {
+	handler := &Handler{
+		auth:   authn.Disabled{},
+		logger: log.New(io.Discard, "", 0),
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/audios/uploads", nil)
+	request.Header.Set("Authorization", "Bearer forged")
+	request.Header.Set("X-Cantaloupe-Subject", "forged-development-user")
+	response := httptest.NewRecorder()
+
+	handler.authenticate(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("forged credentials reached a protected handler")
+	})(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestOptionalAuthenticationAllowsAnonymousRequest(t *testing.T) {
 	handler := &Handler{
 		auth:   stubAuthenticator{},

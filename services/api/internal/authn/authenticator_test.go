@@ -20,6 +20,20 @@ const (
 	testAudience = "audio-api"
 )
 
+func TestDisabledIgnoresAllCredentials(t *testing.T) {
+	subject, err := (Disabled{}).Subject(
+		context.Background(),
+		"Bearer ignored",
+		"forged-development-user",
+	)
+	if err != nil {
+		t.Fatalf("resolve disabled subject: %v", err)
+	}
+	if subject != "" {
+		t.Fatalf("subject = %q, want anonymous", subject)
+	}
+}
+
 func TestDevelopmentSubject(t *testing.T) {
 	subject, err := (Development{}).Subject(context.Background(), "Bearer ignored", "  local-user  ")
 	if err != nil {

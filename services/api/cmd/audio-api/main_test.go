@@ -13,13 +13,14 @@ func TestLoadConfigAuthentication(t *testing.T) {
 		audience string
 		wantErr  string
 	}{
+		{name: "disabled", mode: "disabled"},
 		{name: "development", mode: "development"},
 		{
 			name: "oidc",
 			mode: "oidc", issuer: "https://identity.example.com/realms/cantaloupe", audience: "audio-api",
 		},
 		{name: "oidc missing issuer", mode: "oidc", audience: "audio-api", wantErr: "OIDC_ISSUER_URL and OIDC_AUDIENCE"},
-		{name: "unsupported mode", mode: "invalid", wantErr: "AUTH_MODE must be development or oidc"},
+		{name: "unsupported mode", mode: "invalid", wantErr: "AUTH_MODE must be disabled, development, or oidc"},
 	}
 
 	for _, test := range tests {

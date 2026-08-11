@@ -54,7 +54,12 @@ fallback으로 사용한다.
 secret 같은 비밀 값은 넣지 않는다. `VITE_AUTH_MODE=development`와
 `VITE_DEV_SUBJECT`는 로컬 API 검증에만 사용한다.
 
-Keycloak 연결은 SPA용 Public Client와 Authorization Code + PKCE를 사용한다.
+공개 사용자 Identity가 준비되지 않은 운영 환경은 `authMode: "disabled"`를
+사용한다. Web은 로그인·가입·업로드를 준비 중으로 표시하고 인증 Header를 만들지
+않으며, 공개 카탈로그 탐색은 계속 제공한다.
+
+향후 Keycloak 연결은 Audio 전용 Public Realm의 SPA Client와 Authorization Code +
+PKCE를 사용한다.
 
 ```text
 window.__CNTLP_RUNTIME_CONFIG__ = Object.freeze({

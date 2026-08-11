@@ -82,8 +82,13 @@ VITE_DEV_SUBJECT   로컬 개발용 subject
 VITE_API_BASE_URL  비우면 같은 출처로 호출
 ```
 
-운영 Keycloak OIDC 설정은 `02-k8s-manifests/apps/audio/web/runtime-config.yaml`에서
-관리한다.
+공개 사용자 Identity가 준비되지 않은 운영 환경은 `authMode: disabled`를 사용한다.
+이 모드에서 Web은 로그인·가입·업로드를 노출하지 않고 공개 카탈로그만 제공한다.
+API의 `AUTH_MODE=disabled`는 Bearer Token과 개발용 Subject Header를 모두 무시해
+인증 필수 Endpoint를 `401`로 닫는다.
+
+향후 Public Audio Realm이 준비되면 OIDC 설정을
+`02-k8s-manifests/apps/audio/web/runtime-config.yaml`에서 관리한다.
 
 ```text
 authMode: oidc
@@ -160,8 +165,8 @@ GET    /v1/audios/{id}/playback    CloudFront Signed URL. READY만, 3시간 만�
 
 아직 실제 환경에서 검증하지 않은 경계는 다음과 같다.
 
-- Keycloak Realm·Client 연결과 로그인·소유권 분리 E2E. 현재 배포는
-  `AUTH_MODE=development`를 유지한다.
+- Public Audio Realm·Client와 로그인·가입·소유권 분리 E2E. 현재 배포는
+  `AUTH_MODE=disabled`로 인증 필수 Endpoint를 닫는다.
 - 검색·Creator·Playlist API와 해당 화면의 실제 데이터
 - 실제 악성코드 검사기
 

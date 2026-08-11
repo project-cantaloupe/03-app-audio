@@ -10,7 +10,6 @@ const SearchPage = lazy(() => import("../pages/SearchPage").then((module) => ({ 
 const TrackPage = lazy(() => import("../pages/TrackPage").then((module) => ({ default: module.TrackPage })));
 const CreatorPage = lazy(() => import("../pages/CreatorPage").then((module) => ({ default: module.CreatorPage })));
 const PlaylistPage = lazy(() => import("../pages/PlaylistPage").then((module) => ({ default: module.PlaylistPage })));
-const LibraryPage = lazy(() => import("../pages/LibraryPage").then((module) => ({ default: module.LibraryPage })));
 const UploadPage = lazy(() => import("../pages/UploadPage").then((module) => ({ default: module.UploadPage })));
 const NotificationsPage = lazy(() => import("../pages/NotificationsPage").then((module) => ({ default: module.NotificationsPage })));
 const SettingsPage = lazy(() => import("../pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
@@ -36,8 +35,8 @@ export const router = createBrowserRouter([
       { path: "/track/:trackId", element: load(<TrackPage />) },
       { path: "/creator/:creatorId", element: load(<CreatorPage />) },
       { path: "/playlist/:playlistId", element: load(<PlaylistPage />) },
-      { path: "/library", element: load(<LibraryPage />) },
-      { path: "/upload", element: load(<UploadPage />) },
+      { path: "/library", element: <Navigate to="/discover" replace /> },
+      { path: "/upload", element: authDisabled ? <Navigate to="/discover" replace /> : load(<UploadPage />) },
       { path: "/notifications", element: load(<NotificationsPage />) },
       { path: "/settings", element: load(<SettingsPage />) },
     ],

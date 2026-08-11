@@ -42,7 +42,7 @@ export function TopHeader() {
       </form>
       <div className="top-header__actions">
         {!session && authMode !== "disabled" ? <Button size="sm" variant="secondary" onClick={() => navigate("/sign-in")}>Sign in</Button> : null}
-        <Button size="sm" onClick={() => navigate("/upload")}><Upload size={16} /> Upload</Button>
+        {authMode !== "disabled" ? <Button size="sm" onClick={() => navigate("/upload")}><Upload size={16} /> Upload</Button> : null}
         <button className="icon-button" onClick={() => navigate("/notifications")} aria-label="Notifications"><Bell size={18} /></button>
       </div>
     </header>

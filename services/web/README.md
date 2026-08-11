@@ -45,6 +45,27 @@ npm run build
 
 ## 공개 설정
 
-`VITE_*` 값은 빌드 결과에 포함되는 공개 값이다. AWS Access Key, Secret Key,
-Cognito client secret 같은 비밀 값은 넣지 않는다. `VITE_AUTH_MODE=development`와
+운영 인증 설정은 `/config/runtime-config.js`에서 읽는다. Kubernetes는 ConfigMap을
+이 경로에 마운트하므로 API의 `AUTH_MODE`와 같은 GitOps 동기화에서 전환할 수 있다.
+이미지에 포함된 기본 파일은 빈 설정이며 로컬 실행은 `.env.local`의 `VITE_*` 값을
+fallback으로 사용한다.
+
+두 경로의 값은 브라우저에 공개된다. AWS Access Key, Secret Key, Keycloak client
+secret 같은 비밀 값은 넣지 않는다. `VITE_AUTH_MODE=development`와
 `VITE_DEV_SUBJECT`는 로컬 API 검증에만 사용한다.
+
+Keycloak 연결은 SPA용 Public Client와 Authorization Code + PKCE를 사용한다.
+
+```text
+window.__CNTLP_RUNTIME_CONFIG__ = Object.freeze({
+  authMode: "oidc",
+  oidcIssuerUrl: "https://<keycloak-host>/realms/<realm>",
+  oidcClientId: "<public-spa-client>",
+  oidcRedirectUri: "https://<audio-host>/auth/callback",
+  oidcPostLogoutRedirectUri: "https://<audio-host>/",
+  oidcScope: "openid profile email",
+});
+```
+
+토큰은 `sessionStorage`에만 보관하고 API 요청에는 Access Token을 Bearer Token으로
+전달한다. Redirect URI와 Web Origin은 Keycloak Client 설정에도 정확히 등록한다.

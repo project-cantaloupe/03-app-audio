@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/artifacturl"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/audio"
+	"github.com/project-cantaloupe/app-audio/services/api/internal/authn"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/health"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/httpapi"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/platform"
@@ -42,10 +43,20 @@ func run(parent context.Context, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
-	if config.AuthMode != "development" {
-		return errors.New("only AUTH_MODE=development is implemented; Cognito verification must be added before public deployment")
+	var authenticator authn.Authenticator
+	switch config.AuthMode {
+	case "development":
+		authenticator = authn.Development{}
+		logger.Print("warning: development subject header authentication is enabled")
+	case "oidc":
+		authenticator, err = authn.NewOIDC(parent, config.OIDCIssuerURL, config.OIDCAudience)
+		if err != nil {
+			return err
+		}
+		logger.Printf("OIDC authentication enabled issuer=%s audience=%s", config.OIDCIssuerURL, config.OIDCAudience)
+	default:
+		return errors.New("AUTH_MODE must be development or oidc")
 	}
-	logger.Print("warning: development subject header authentication is enabled")
 	logger.Print("warning: development scan adapter marks verified uploads clean without malware inspection")
 
 	ctx, cancel := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
@@ -117,7 +128,7 @@ func run(parent context.Context, logger *log.Logger) error {
 	probe.SetReady(true)
 	server := &http.Server{
 		Addr:              config.HTTPAddress,
-		Handler:           httpapi.New(service, probe, logger),
+		Handler:           httpapi.New(service, probe, logger, authenticator),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -160,6 +171,8 @@ type config struct {
 	CloudFrontPrivateKeyFile string
 	ScanResultQueueURL       string
 	AuthMode                 string
+	OIDCIssuerURL            string
+	OIDCAudience             string
 }
 
 func loadConfig() (config, error) {
@@ -187,12 +200,20 @@ func loadConfig() (config, error) {
 		CloudFrontPrivateKeyFile: os.Getenv("CLOUDFRONT_PRIVATE_KEY_FILE"),
 		ScanResultQueueURL:       os.Getenv("SCAN_RESULT_QUEUE_URL"),
 		AuthMode:                 os.Getenv("AUTH_MODE"),
+		OIDCIssuerURL:            os.Getenv("OIDC_ISSUER_URL"),
+		OIDCAudience:             os.Getenv("OIDC_AUDIENCE"),
 	}
 	if result.DatabaseURL == "" || result.AWSRegion == "" || result.QuarantineBucket == "" || result.ArtifactBucket == "" || result.ScanResultQueueURL == "" {
 		return config{}, errors.New("DATABASE_URL, AWS_REGION, QUARANTINE_BUCKET, ARTIFACT_BUCKET, and SCAN_RESULT_QUEUE_URL are required")
 	}
 	if result.PlaybackURLMode == "cloudfront" && (result.CloudFrontBaseURL == "" || result.CloudFrontKeyPairID == "" || result.CloudFrontPrivateKeyFile == "") {
 		return config{}, errors.New("CloudFront playback mode requires CLOUDFRONT_BASE_URL, CLOUDFRONT_KEY_PAIR_ID, and CLOUDFRONT_PRIVATE_KEY_FILE")
+	}
+	if result.AuthMode != "development" && result.AuthMode != "oidc" {
+		return config{}, errors.New("AUTH_MODE must be development or oidc")
+	}
+	if result.AuthMode == "oidc" && (result.OIDCIssuerURL == "" || result.OIDCAudience == "") {
+		return config{}, errors.New("OIDC_ISSUER_URL and OIDC_AUDIENCE are required when AUTH_MODE=oidc")
 	}
 	return result, nil
 }

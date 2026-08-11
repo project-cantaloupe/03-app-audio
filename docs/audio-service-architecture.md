@@ -55,7 +55,7 @@ HLS는 MP3 기준선의 재생 품질과 비용을 측정한 뒤 비교 실험�
 | 악성코드 검사 | 미채택. 개발용 Scan Adapter가 계약만 유지 | 대상 AWS 계정이 Free account plan이라 GuardDuty를 구독할 수 없고, ClamAV는 단일 Worker의 메모리 기준선을 깬다. 격리·계약·상태 기계는 유지하고 검사기 자리만 비워 둔다. |
 | 재생 | Progressive MP3 | VOD 오디오에 HLS playlist·segment 복잡도를 추가하지 않고 Range GET으로 seek한다. |
 | 파형 | 사전 생성한 JSON | 재생 시 원본을 다시 분석하지 않고 브라우저에는 작은 peak 데이터만 전달한다. |
-| 인증 | Cognito | 비밀번호를 애플리케이션 DB에서 관리하지 않고 JWT subject를 소유자 식별자로 쓴다. |
+| 인증 | Keycloak OIDC | 비밀번호를 애플리케이션 DB에서 관리하지 않고 JWT subject를 소유자 식별자로 쓴다. |
 | 외부 진입 | Internet-facing NLB + Istio Ingress Gateway | NLB는 L4 연결만 전달하고 TLS와 HTTP 라우팅은 Istio가 소유한다. |
 | TLS | Istio Gateway 종료 + cert-manager DNS-01 | 공개 인증서를 자동 갱신하고 private key를 Git 밖의 Kubernetes Secret으로 관리한다. |
 | Service Mesh 범위 | `audio-web`, `audio-api` | 실제 HTTP 진입 경로에만 Sidecar를 적용하고 비동기 Worker 비용과 장애 범위를 분리한다. |
@@ -97,7 +97,7 @@ spec:
 | Workload | 형태 | 책임 |
 | --- | --- | --- |
 | `audio-web` | Deployment | 업로드·상태·재생 UI |
-| `audio-api` | Deployment | HTTP API, Cognito JWT 검증, Presigned URL과 재생 URL 발급 |
+| `audio-api` | Deployment | HTTP API, Keycloak JWT 검증, Presigned URL과 재생 URL 발급 |
 | `audio-events` | Deployment | Scan 결과·Worker 결과 소비, Outbox 발행 |
 | `audio-transcode` | Deployment, replica 1 | SQS를 long polling하고 메시지를 한 건씩 처리 |
 
@@ -109,7 +109,7 @@ Service로 운영한다. Control Plane에는 Gateway와 사용자 Workload를 �
 ```mermaid
 flowchart LR
     Client["Web Client"]
-    Cognito["Amazon Cognito"]
+    Keycloak["Keycloak OIDC"]
     DNS["Public DNS"]
     NLB["AWS NLB<br/>TCP 80/443"]
     CloudFront["CloudFront"]
@@ -132,7 +132,7 @@ flowchart LR
         DLQ["SQS DLQs"]
     end
 
-    Client --> Cognito
+    Client --> Keycloak
     Client --> DNS
     DNS --> NLB
     NLB --> Ingress
@@ -237,7 +237,7 @@ MVP는 `networking.istio.io/v1`의 Gateway, VirtualService와 DestinationRule을
 
 | 요청 | 대상 | 비고 |
 | --- | --- | --- |
-| `/v1/*` | `audio-api` | Cognito JWT 검증은 API가 계속 수행 |
+| `/v1/*` | `audio-api` | Keycloak JWT 검증은 API가 계속 수행 |
 | `/` | `audio-web` | 정적 UI와 클라이언트 라우팅 |
 | `/metrics` | 외부 라우팅 없음 | Prometheus의 클러스터 내부 scrape만 허용 |
 | `/healthz`, `/readyz` | 외부 라우팅 없음 | Kubernetes probe와 내부 검증에만 사용 |
@@ -256,7 +256,7 @@ Workload로 들어가는 통신은 `PeerAuthentication`의 `STRICT` mTLS를 요�
 `AuthorizationPolicy`는 Ingress Gateway ServiceAccount에서 온 요청만 애플리케이션
 포트로 허용한다.
 
-Cognito JWT의 소유권과 도메인 권한 검증은 `audio-api`가 계속 수행한다. Istio
+Keycloak JWT의 소유권과 도메인 권한 검증은 `audio-api`가 계속 수행한다. Istio
 정책은 애플리케이션 인증을 대체하지 않는다. `audio-events`와
 `audio-transcode`는 SQS·S3·RDS가 주요 통신 대상이므로 Sidecar를 주입하지 않고
 NetworkPolicy와 AWS IAM으로 보호한다.
@@ -280,7 +280,7 @@ sequenceDiagram
     participant Q as "scan-result Queue"
     participant Events as "audio-events"
 
-    Client->>API: "Cognito JWT + 파일명·크기·MIME·checksum"
+    Client->>API: "Keycloak JWT + 파일명·크기·MIME·checksum"
     API->>DB: "audio와 upload 레코드 생성"
     API-->>Client: "100 MB 이하 Presigned PUT + 필수 header"
     Client->>S3: "원본 직접 업로드"
@@ -404,7 +404,7 @@ sequenceDiagram
 - 업로드와 내부 S3 작업에는 Presigned S3 URL을 사용한다.
 - 사용자 재생에는 CloudFront URL을 사용한다.
 - 공개 오디오도 API가 visibility를 확인한 후 짧은 URL을 발급할 수 있다.
-- 비공개 오디오는 Cognito 사용자와 owner를 확인한다.
+- 비공개 오디오는 Keycloak 사용자와 owner를 확인한다.
 - 원본 파일은 어떤 visibility에서도 재생 URL을 발급하지 않는다.
 
 MVP에서는 MP3 한 객체에 대한 Range GET으로 seek한다. HLS는 실제 측정에서
@@ -441,8 +441,8 @@ MP3 생성은 성공했지만 waveform만 실패한 경우 같은 Job을 재시�
 
 | Method | Path | 인증 | 책임 |
 | --- | --- | --- | --- |
-| `POST` | `/v1/audios/uploads` | Cognito JWT | audio ID와 Presigned PUT 생성 |
-| `POST` | `/v1/audios/{audio_id}/complete` | Cognito JWT | S3 객체 검증 완료 기록 |
+| `POST` | `/v1/audios/uploads` | Keycloak JWT | audio ID와 Presigned PUT 생성 |
+| `POST` | `/v1/audios/{audio_id}/complete` | Keycloak JWT | S3 객체 검증 완료 기록 |
 | `GET` | `/v1/audios/{audio_id}` | visibility에 따라 선택 | 메타데이터와 처리 상태 조회 |
 | `GET` | `/v1/audios/{audio_id}/playback` | visibility에 따라 선택 | MP3·waveform CloudFront URL 발급 |
 | `PATCH` | `/v1/audios/{audio_id}/visibility` | owner JWT | 공개 범위 변경 |
@@ -459,7 +459,7 @@ Python Worker는 RDS에 연결하지 않고 S3와 SQS만 사용한다.
 | 필드 | 의미 |
 | --- | --- |
 | `id` | 서버가 발급한 audio ID |
-| `owner_subject` | Cognito `sub` |
+| `owner_subject` | Keycloak `sub` |
 | `title` | 사용자 표시 제목 |
 | `visibility` | `public` 또는 `private` |
 | `status` | 오디오 전체 상태 |
@@ -607,9 +607,9 @@ cntlp-aws-transcode/
 
 ### 사용자 인증
 
-- Web은 Cognito Authorization Code + PKCE 흐름을 사용한다.
-- API는 Cognito JWKS로 JWT 서명을 검증한다.
-- `sub`, `iss`, `aud` 또는 `client_id`, 만료시간을 확인한다.
+- Web은 Keycloak Authorization Code + PKCE 흐름을 사용한다.
+- API는 Keycloak OIDC Discovery와 JWKS로 Access Token 서명을 검증한다.
+- `sub`, `iss`, `aud`, 만료시간을 확인한다.
 - 이메일을 DB의 불변 소유자 키로 사용하지 않는다.
 
 ### Workload 권한
@@ -804,7 +804,7 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 - `terraform/aws/edge`: cert-manager DNS-01용 최소 IAM과 관련 출력
 - Edge는 Network·Compute remote state를 읽고 Worker instance ID 변경을 Target
   attachment에 반영
-- S3, SQS, DLQ, Cognito, CloudFront, IAM
+- S3, SQS, DLQ, CloudFront, IAM
 - 자동 확장 선택 시 ASG와 Packer·Ansible Worker image·bootstrap
 - Terraform 비용 상한과 destroy 경계
 
@@ -813,6 +813,7 @@ Prometheus label이나 Kubernetes label에는 사용하지 않는다.
 - Istio Helm chart 버전 고정, control plane과 `istio-ingress` NodePort Service
 - Istio 업그레이드 전 diff·분석과 이전 버전 rollback 절차
 - cert-manager Certificate·Issuer 참조와 TLS Secret 연결
+- Keycloak OIDC Realm·Public Client와 외부 issuer 연결
 - Gateway, VirtualService, DestinationRule
 - PeerAuthentication, AuthorizationPolicy와 선택적 Sidecar 주입
 - `apps` Namespace의 Deployment·Service
@@ -853,23 +854,23 @@ API와 Worker 메시지 Schema는 같은 커밋에서 호환되게 변경한다.
 
 1. Private S3와 Lifecycle
 2. SQS 세트와 DLQ
-3. Cognito
-4. CloudFront OAC와 Signed URL
-5. Private RDS와 migration
-6. Internet-facing NLB, Target Group, Security Group과 Public DNS
-7. cert-manager DNS-01용 IAM
+3. CloudFront OAC와 Signed URL
+4. Private RDS와 migration
+5. Internet-facing NLB, Target Group, Security Group과 Public DNS
+6. cert-manager DNS-01용 IAM
 
 ### Phase 3: Kubernetes 배포
 
 1. Istio control plane과 Ingress Gateway 배포
 2. Gateway NodePort와 NLB Target health 검증
 3. cert-manager 인증서 발급과 HTTPS·HTTP redirect 검증
-4. `audio-web`, `audio-api`, `audio-events` 배포
-5. `audio-web`, `audio-api` Sidecar와 STRICT mTLS 적용
-6. AuthorizationPolicy와 기본 stable 100% route 적용
-7. AWS Node selector, resource limit, NetworkPolicy와 Secret 연동
-8. replica 1인 `audio-transcode` Deployment 적용
-9. 실제 SQS·S3·RDS 통합 검증
+4. Keycloak Realm·Public Client·API Audience와 외부 issuer 검증
+5. `audio-web`, `audio-api`, `audio-events` 배포
+6. `audio-web`, `audio-api` Sidecar와 STRICT mTLS 적용
+7. AuthorizationPolicy와 기본 stable 100% route 적용
+8. AWS Node selector, resource limit, NetworkPolicy와 Secret 연동
+9. replica 1인 `audio-transcode` Deployment 적용
+10. 실제 Keycloak·SQS·S3·RDS 통합 검증
 
 ### Phase 4: Service Mesh 검증
 

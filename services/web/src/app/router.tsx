@@ -14,6 +14,7 @@ const UploadPage = lazy(() => import("../pages/UploadPage").then((module) => ({ 
 const NotificationsPage = lazy(() => import("../pages/NotificationsPage").then((module) => ({ default: module.NotificationsPage })));
 const SettingsPage = lazy(() => import("../pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 const SignInPage = lazy(() => import("../pages/SignInPage").then((module) => ({ default: module.SignInPage })));
+const AuthCallbackPage = lazy(() => import("../pages/AuthCallbackPage").then((module) => ({ default: module.AuthCallbackPage })));
 
 function load(element: ReactNode) {
   return <Suspense fallback={<div className="route-loading" role="status">Tuning the signal…</div>}>{element}</Suspense>;
@@ -23,6 +24,7 @@ export const router = createBrowserRouter([
   { path: "/", element: load(<LandingPage />) },
   { path: "/landing", element: load(<LandingPage />) },
   { path: "/sign-in", element: load(<SignInPage />) },
+  { path: "/auth/callback", element: load(<AuthCallbackPage />) },
   {
     element: <AppShell />,
     children: [

@@ -137,8 +137,6 @@ jobs:
           harbor_image="$HARBOR_REGISTRY/$HARBOR_PROJECT/web:${GITHUB_SHA}"
           ecr_image="${{ steps.ecr-login.outputs.registry }}/app-audio-web:${GITHUB_SHA}"
           docker build \
-            --build-arg VITE_DEV_SUBJECT="${{ vars.VITE_DEV_SUBJECT }}" \
-            --build-arg VITE_AUTH_MODE="${{ vars.VITE_AUTH_MODE || 'development' }}" \
             --build-arg VITE_API_BASE_URL="${{ vars.VITE_API_BASE_URL }}" \
             --tag "$harbor_image" --tag "$ecr_image" --file services/web/Dockerfile services/web
           docker push "$harbor_image"

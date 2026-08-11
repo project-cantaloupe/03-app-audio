@@ -26,52 +26,89 @@ shared/schema/     api 와 worker 가 주고받는 메시지 형식
 
 ## 빌드 시 흐름
 
-`main` 푸시마다 GitHub Actions가 세 서비스를 빌드해 Harbor로 푸시한다.
+`main` 푸시마다 GitHub Actions가 세 서비스를 빌드해 Tailscale HTTPS Harbor로
+푸시한다. `latest`와 배포 추적용 커밋 SHA 태그를 함께 만든다.
 
 ```
-푸시 → GitHub Actions → Harbor (cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-*)
+푸시 → GitHub Actions → Harbor
+     → 02-k8s-manifests의 이미지 SHA 갱신
+     → Argo CD 동기화
 ```
 
-**클러스터가 받는 이미지는 아직 이 경로가 아니다.** `02-k8s-manifests/apps/audio`는
-GHCR을 가리킨다.
+이미지 경로는 다음과 같다.
 
 ```
-CI가 푸시    …ts.net/library/app-audio-{api,web,worker}
-k8s가 pull   ghcr.io/project-cantaloupe/audio-{api,web,worker}:dev
+cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:<git-sha>
+cntlp-onp-wk-01.tail270b85.ts.net/library/web:<git-sha>
+cntlp-onp-wk-01.tail270b85.ts.net/library/worker:<git-sha>
 ```
 
-레지스트리와 이미지 이름이 모두 달라서, 두 경로가 하나로 합쳐지기 전까지는
-GHCR로 직접 빌드·푸시해야 배포에 반영된다.
+Harbor의 `library` 프로젝트는 공개 Pull이므로 Kubernetes에는 Registry 자격증명을
+배포하지 않는다. Push 자격증명은 GitHub Actions Secret으로만 관리한다.
+
+GitOps 갱신 단계에는 `02-k8s-manifests` Contents 쓰기 권한만 가진
+`MANIFESTS_TOKEN` Secret이 필요하다. 이 값이 없으면 Harbor 이미지 Push까지는
+완료되지만 매니페스트 저장소 체크아웃 단계에서 중단된다.
+
+수동 빌드는 동일한 Harbor 경로를 사용한다.
 
 ```bash
 docker buildx build --platform linux/amd64 \
-  -t ghcr.io/project-cantaloupe/audio-api:dev --push services/api
+  -t cntlp-onp-wk-01.tail270b85.ts.net/library/app-audio-api:<git-sha> \
+  --push services/api
 
 docker buildx build --platform linux/amd64 \
   --build-arg VITE_DEV_SUBJECT=browser-tester \
-  -t ghcr.io/project-cantaloupe/audio-web:dev --push services/web
+  -t cntlp-onp-wk-01.tail270b85.ts.net/library/web:<git-sha> \
+  --push services/web
 ```
 
-매니페스트의 `imagePullPolicy`가 `Always`이므로 푸시 후 `rollout restart`로
-새 이미지를 받는다.
+매니페스트는 가변 `dev` 대신 커밋 SHA 태그를 사용한다. Argo CD는
+`02-k8s-manifests`의 태그 변경을 감지해 새 이미지를 배포한다.
 
-### Web 빌드 인자
+### Web 공개 설정
 
-**Vite는 `import.meta.env` 값을 빌드 시점에 번들로 굳힌다.** 런타임 환경변수나
-ConfigMap이 아니므로, 빌드할 때 넘기지 않으면 이미지에 값이 없다.
+`VITE_API_BASE_URL`은 빌드 시점에 번들로 굳힌다. 비우면 Web이 같은 출처의 API를
+호출한다.
+
+인증 설정은 `/config/runtime-config.js`에서 읽는다. 운영 환경에서는 Kubernetes
+ConfigMap을 이 경로에 마운트하므로 같은 Web 이미지를 다시 빌드하지 않고 API와
+같은 Argo CD 동기화에서 인증 모드를 전환할 수 있다. 이미지에 포함된 빈 설정 파일은
+독립 실행 시 안전한 기본값이며, 로컬 개발에서는 `VITE_*` 값을 fallback으로 쓴다.
 
 ```
-VITE_AUTH_MODE     기본 development
-VITE_DEV_SUBJECT   개발용 subject. 비면 authService가 세션을 만들지 못해
-                   업로드 화면이 "An authenticated session is required"로 막힌다
-VITE_API_BASE_URL  비우면 같은 출처로 호출한다
+VITE_AUTH_MODE     로컬 fallback. 기본 development
+VITE_DEV_SUBJECT   로컬 개발용 subject
+VITE_API_BASE_URL  비우면 같은 출처로 호출
 ```
 
-수동 빌드와 CI 모두 같은 값을 넘겨야 한다. CI는 `.github/workflows/deploy.yml`이
-저장소 Variables에서 읽는다.
+운영 Keycloak OIDC 설정은 `02-k8s-manifests/apps/audio/web/runtime-config.yaml`에서
+관리한다.
 
-Keycloak OIDC가 붙으면 `VITE_DEV_SUBJECT` 대신 `VITE_AUTH_MODE=oidc`와 issuer,
-client id를 넘긴다.
+```text
+authMode: oidc
+oidcIssuerUrl: https://<keycloak-host>/realms/<realm>
+oidcClientId: <public-spa-client>
+oidcRedirectUri: https://<audio-host>/auth/callback
+oidcPostLogoutRedirectUri: https://<audio-host>/
+oidcScope: openid profile email
+```
+
+SPA Client에는 client secret을 만들거나 주입하지 않는다. Web은 Authorization
+Code + PKCE로 받은 Access Token을 `Authorization: Bearer` 헤더에 넣고, API는
+`OIDC_ISSUER_URL`의 JWKS와 `OIDC_AUDIENCE`로 서명·발급자·대상·만료·`sub`를 검증한다.
+
+API는 런타임에 다음 값을 받는다.
+
+```text
+AUTH_MODE=oidc
+OIDC_ISSUER_URL=https://<keycloak-host>/realms/<realm>
+OIDC_AUDIENCE=<api-audience>
+```
+
+Keycloak의 Web Client에는 `<api-audience>`를 Access Token의 `aud`에 넣는 Audience
+Mapper 또는 동등한 Client Scope가 필요하다. 그렇지 않으면 로그인에는 성공해도
+API가 다른 서비스용 토큰으로 판단해 `401`을 반환한다.
 
 ## API
 
@@ -119,10 +156,12 @@ GET    /v1/audios/{id}/playback    CloudFront Signed URL. READY만, 3시간 만�
 - PostgreSQL·LocalStack을 사용하는 로컬 실행 구성
 - Kubernetes 배포 매니페스트 (`02-k8s-manifests/apps/audio`)
 - 본인 트랙 목록과 공개 카탈로그, 공개 여부 전환
+- Keycloak과 호환되는 OIDC Authorization Code + PKCE Web 흐름과 API JWT 검증
 
-아직 구현하지 않은 경계는 다음과 같다.
+아직 실제 환경에서 검증하지 않은 경계는 다음과 같다.
 
-- Keycloak OIDC 검증. 현재 `AUTH_MODE=development`에서만 개발용 subject header 사용
+- Keycloak Realm·Client 연결과 로그인·소유권 분리 E2E. 현재 배포는
+  `AUTH_MODE=development`를 유지한다.
 - 검색·Creator·Playlist API와 해당 화면의 실제 데이터
 - 실제 악성코드 검사기
 
@@ -183,8 +222,8 @@ DB에 저장돼 변환 작업 메시지로 전달되고, 워커가 그것과 대
 현재 악성코드 검사기는 없다. `audio-api`의 개발용 Scan Adapter는 `/complete`에서
 정확한 S3 Version을 검증한 뒤 `CntlpScanStatus=NO_THREATS_FOUND` 태그와
 `scan-result` 메시지를 기록한다. 이는 Queue·상태 기계·Worker 계약을 검증하기
-위한 대체 경로이지 실제 보안 검사가 아니다. API는 현재 `AUTH_MODE=development`
-외에는 시작하지 않으므로 이 경로를 공개 환경에 배포하지 않는다.
+위한 대체 경로이지 실제 보안 검사가 아니다. OIDC 인증은 이 검사 경계를
+대체하지 않으므로 실제 검사기 도입 전에는 공개 업로드 서비스로 완료 판정하지 않는다.
 
 개발용 인증은 공개 환경에 배포하지 않는다.
 

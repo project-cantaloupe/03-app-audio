@@ -35,6 +35,7 @@ type PlayerState = {
   setMobileOpen: (open: boolean) => void;
   next: () => void;
   previous: () => void;
+  resetForIdentityChange: () => void;
 };
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
@@ -90,5 +91,21 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const previousIndex = Math.max(0, currentIndex - 1);
     const track = queue[previousIndex];
     if (track) set({ currentIndex: previousIndex, currentTrack: track, currentTime: 0, isPlaying: true, error: null });
+  },
+  resetForIdentityChange: () => {
+    const mediaElement = get().mediaElement;
+    mediaElement?.pause();
+    if (mediaElement) mediaElement.removeAttribute("src");
+    set({
+      currentTrack: null,
+      queue: [],
+      currentIndex: -1,
+      isPlaying: false,
+      isBuffering: false,
+      currentTime: 0,
+      duration: 0,
+      error: null,
+      mobileOpen: false,
+    });
   },
 }));

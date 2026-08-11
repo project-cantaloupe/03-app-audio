@@ -103,7 +103,7 @@ func TestCreateUploadBuildsImmutableSourceKey(t *testing.T) {
 	service := NewService(repository, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"audio-id", "upload-id"}}, clock, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
 	result, err := service.CreateUpload(context.Background(), CreateUploadInput{
-		OwnerSubject: "cognito-sub", Title: " test audio ", ContentType: "audio/mpeg",
+		OwnerSubject: "oidc-sub", Title: " test audio ", ContentType: "audio/mpeg",
 		ContentLength: 1024, ChecksumSHA256: validChecksum(),
 	})
 	if err != nil {

@@ -45,6 +45,9 @@ func run(parent context.Context, logger *log.Logger) error {
 	}
 	var authenticator authn.Authenticator
 	switch config.AuthMode {
+	case "disabled":
+		authenticator = authn.Disabled{}
+		logger.Print("authentication disabled: protected endpoints reject all requests")
 	case "development":
 		authenticator = authn.Development{}
 		logger.Print("warning: development subject header authentication is enabled")
@@ -55,7 +58,7 @@ func run(parent context.Context, logger *log.Logger) error {
 		}
 		logger.Printf("OIDC authentication enabled issuer=%s audience=%s", config.OIDCIssuerURL, config.OIDCAudience)
 	default:
-		return errors.New("AUTH_MODE must be development or oidc")
+		return errors.New("AUTH_MODE must be disabled, development, or oidc")
 	}
 	logger.Print("warning: development scan adapter marks verified uploads clean without malware inspection")
 
@@ -209,8 +212,8 @@ func loadConfig() (config, error) {
 	if result.PlaybackURLMode == "cloudfront" && (result.CloudFrontBaseURL == "" || result.CloudFrontKeyPairID == "" || result.CloudFrontPrivateKeyFile == "") {
 		return config{}, errors.New("CloudFront playback mode requires CLOUDFRONT_BASE_URL, CLOUDFRONT_KEY_PAIR_ID, and CLOUDFRONT_PRIVATE_KEY_FILE")
 	}
-	if result.AuthMode != "development" && result.AuthMode != "oidc" {
-		return config{}, errors.New("AUTH_MODE must be development or oidc")
+	if result.AuthMode != "disabled" && result.AuthMode != "development" && result.AuthMode != "oidc" {
+		return config{}, errors.New("AUTH_MODE must be disabled, development, or oidc")
 	}
 	if result.AuthMode == "oidc" && (result.OIDCIssuerURL == "" || result.OIDCAudience == "") {
 		return config{}, errors.New("OIDC_ISSUER_URL and OIDC_AUDIENCE are required when AUTH_MODE=oidc")

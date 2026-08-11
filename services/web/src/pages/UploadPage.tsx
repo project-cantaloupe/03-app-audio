@@ -28,6 +28,7 @@ export function UploadPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const session = useAuthStore((state) => state.session);
+  const authMode = useAuthStore((state) => state.mode);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   // 기본값은 private다. 공개는 올리는 사람이 명시적으로 고른다.
@@ -123,7 +124,7 @@ export function UploadPage() {
         {["Select file", "Upload", "Process", "Add details", "Publish"].map((label, index) => <li key={label} className={index < currentStep || stage === "ready" ? "is-complete" : index === currentStep ? "is-current" : ""}><span>{index < currentStep || stage === "ready" ? <Check size={15} /> : index + 1}</span><small>{label}</small></li>)}
       </ol>
 
-      {!session ? <div className="notice notice--warning" role="alert"><AlertCircle /><div><strong>An authenticated session is required</strong><p><Link to="/sign-in">Sign in with Keycloak</Link> or configure the development subject locally before uploading.</p></div></div> : null}
+      {!session ? <div className="notice notice--warning" role="alert"><AlertCircle /><div><strong>{authMode === "disabled" ? "Uploads are temporarily unavailable" : "An authenticated session is required"}</strong><p>{authMode === "disabled" ? <>Public Audio identity is being separated from the internal operator realm. <Link to="/discover">Browse public audio</Link> while sign-in and sign-up are unavailable.</> : <><Link to="/sign-in">Sign in with Keycloak</Link> or configure the development subject locally before uploading.</>}</p></div></div> : null}
 
       <form className="upload-workspace" onSubmit={runUpload}>
         <div

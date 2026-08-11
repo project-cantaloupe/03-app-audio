@@ -1,6 +1,6 @@
 import { UserManager, WebStorageStateStore, type User } from "oidc-client-ts";
 
-export type AuthMode = "development" | "oidc";
+export type AuthMode = "disabled" | "development" | "oidc";
 
 export type AuthSession = {
   subject: string;
@@ -20,12 +20,14 @@ export function getAuthMode(): AuthMode {
 }
 
 export async function getSession(): Promise<AuthSession | null> {
+  if (authMode === "disabled") return null;
   if (authMode === "development") return developmentSession();
   const user = await getUserManager().getUser();
   return activeSession(user);
 }
 
 export async function getAuthHeaders(): Promise<HeadersInit> {
+  if (authMode === "disabled") return {};
   if (authMode === "development") {
     const session = developmentSession();
     return session ? { "X-Cantaloupe-Subject": session.subject } : {};
@@ -61,7 +63,7 @@ export async function completeSignIn(): Promise<string> {
 }
 
 export async function signOut(): Promise<void> {
-  if (authMode === "development") return;
+  if (authMode !== "oidc") return;
   await getUserManager().signoutRedirect();
 }
 

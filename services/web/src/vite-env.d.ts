@@ -3,7 +3,7 @@
 interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string;
   readonly VITE_PUBLIC_SITE_URL?: string;
-  readonly VITE_AUTH_MODE?: "development" | "oidc";
+  readonly VITE_AUTH_MODE?: "disabled" | "development" | "oidc";
   readonly VITE_DEV_SUBJECT?: string;
   readonly VITE_OIDC_ISSUER_URL?: string;
   readonly VITE_OIDC_CLIENT_ID?: string;
@@ -18,7 +18,7 @@ interface ImportMeta {
 }
 
 type CantaloupeRuntimeConfig = {
-  readonly authMode?: "development" | "oidc";
+  readonly authMode?: "disabled" | "development" | "oidc";
   readonly oidcIssuerUrl?: string;
   readonly oidcClientId?: string;
   readonly oidcRedirectUri?: string;

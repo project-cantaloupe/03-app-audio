@@ -6,6 +6,7 @@ import { useAuthStore } from "../../stores/authStore";
 
 export function TopHeader() {
   const navigate = useNavigate();
+  const authMode = useAuthStore((state) => state.mode);
   const session = useAuthStore((state) => state.session);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -40,7 +41,7 @@ export function TopHeader() {
         <kbd>/</kbd>
       </form>
       <div className="top-header__actions">
-        {!session ? <Button size="sm" variant="secondary" onClick={() => navigate("/sign-in")}>Sign in</Button> : null}
+        {!session && authMode !== "disabled" ? <Button size="sm" variant="secondary" onClick={() => navigate("/sign-in")}>Sign in</Button> : null}
         <Button size="sm" onClick={() => navigate("/upload")}><Upload size={16} /> Upload</Button>
         <button className="icon-button" onClick={() => navigate("/notifications")} aria-label="Notifications"><Bell size={18} /></button>
       </div>

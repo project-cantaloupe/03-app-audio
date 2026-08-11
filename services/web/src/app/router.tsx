@@ -1,7 +1,8 @@
 import { lazy, Suspense, type ReactNode } from "react";
-import { createBrowserRouter } from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "../components/layout/AppShell";
 import { NotFoundPage } from "../pages/NotFoundPage";
+import { getAuthMode } from "../services/authService";
 
 const LandingPage = lazy(() => import("../pages/LandingPage").then((module) => ({ default: module.LandingPage })));
 const DiscoverPage = lazy(() => import("../pages/DiscoverPage").then((module) => ({ default: module.DiscoverPage })));
@@ -20,11 +21,13 @@ function load(element: ReactNode) {
   return <Suspense fallback={<div className="route-loading" role="status">Tuning the signal…</div>}>{element}</Suspense>;
 }
 
+const authDisabled = getAuthMode() === "disabled";
+
 export const router = createBrowserRouter([
   { path: "/", element: load(<LandingPage />) },
   { path: "/landing", element: load(<LandingPage />) },
-  { path: "/sign-in", element: load(<SignInPage />) },
-  { path: "/auth/callback", element: load(<AuthCallbackPage />) },
+  { path: "/sign-in", element: authDisabled ? <Navigate to="/discover" replace /> : load(<SignInPage />) },
+  { path: "/auth/callback", element: authDisabled ? <Navigate to="/discover" replace /> : load(<AuthCallbackPage />) },
   {
     element: <AppShell />,
     children: [

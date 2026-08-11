@@ -1,5 +1,5 @@
 import { apiRequest } from "./apiClient";
-import type { AudioRecord, UploadSession, Visibility } from "../types/audio";
+import type { AudioRecord, UploadSession } from "../types/audio";
 
 type CreateUploadResponse = {
   audio_id: string;
@@ -14,7 +14,7 @@ export type UploadProgress = {
   total: number;
 };
 
-export async function createUpload(file: File, title: string, visibility: Visibility = "private"): Promise<UploadSession> {
+export async function createUpload(file: File, title: string): Promise<UploadSession> {
   const checksum = await calculateSHA256(file);
   const contentType = resolveContentType(file);
   if (!contentType) throw new Error("This audio format is not accepted by the current upload API.");
@@ -25,7 +25,7 @@ export async function createUpload(file: File, title: string, visibility: Visibi
       content_type: contentType,
       content_length: file.size,
       checksum_sha256: checksum,
-      visibility,
+      visibility: "public",
     }),
   });
 

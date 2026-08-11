@@ -8,7 +8,7 @@ import { useAuthStore } from "../stores/authStore";
 import { useUploadStore, type UploadStage } from "../stores/uploadStore";
 import { getAudio, trackKeys } from "../services/trackService";
 import { completeUpload, createUpload, resolveContentType, uploadFile } from "../services/uploadService";
-import type { AudioRecord, Visibility } from "../types/audio";
+import type { AudioRecord } from "../types/audio";
 import { formatBytes } from "../utils/time";
 
 const maximumBytes = 100 * 1024 * 1024;
@@ -31,8 +31,6 @@ export function UploadPage() {
   const authMode = useAuthStore((state) => state.mode);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
-  // 기본값은 private다. 공개는 올리는 사람이 명시적으로 고른다.
-  const [visibility, setVisibility] = useState<Visibility>("private");
   const [dragging, setDragging] = useState(false);
   const stage = useUploadStore((state) => state.stage);
   const uploadSession = useUploadStore((state) => state.session);
@@ -96,7 +94,7 @@ export function UploadPage() {
     setError(null);
     try {
       setStage("preparing");
-      const nextSession = await createUpload(file, title.trim(), visibility);
+      const nextSession = await createUpload(file, title.trim());
       setUploadSession(nextSession);
       setStage("uploading");
       await uploadFile(nextSession, file, ({ transferred: sent, total: size }) => setProgress(sent, size), controller.signal);
@@ -154,7 +152,7 @@ export function UploadPage() {
         </div>
       </form>
 
-      <section className="metadata-preview"><div><p className="eyebrow">DETAILS AFTER PROCESSING</p><h2>Publishing metadata</h2><p>The current backend accepts the title and visibility during upload. Creator, artwork, genre, mood, tags, and release details will be enabled when the metadata update API is available. Visibility can also be changed later on the track page.</p></div><div className="metadata-fields"><label>Creator<Input disabled placeholder="Identity profile" /></label><label>Genre<Input disabled placeholder="Metadata API required" /></label><label>Visibility<select value={visibility} onChange={(event) => setVisibility(event.target.value as Visibility)} disabled={stage !== "idle"}><option value="private">Private — only you</option><option value="public">Public — listed in Discover</option></select></label><label>Description<textarea disabled placeholder="Metadata API required" /></label></div></section>
+      <section className="metadata-preview"><div><p className="eyebrow">DETAILS AFTER PROCESSING</p><h2>Publishing metadata</h2><p>Web uploads are published to Discover after processing. Creator, artwork, genre, mood, tags, and release details will be enabled when the metadata update API is available.</p></div><div className="metadata-fields"><label>Creator<Input disabled placeholder="Identity profile" /></label><label>Genre<Input disabled placeholder="Metadata API required" /></label><label>Visibility<select value="public" disabled><option value="public">Public — listed in Discover</option></select></label><label>Description<textarea disabled placeholder="Metadata API required" /></label></div></section>
     </div>
   );
 }

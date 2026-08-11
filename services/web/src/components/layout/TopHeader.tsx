@@ -2,9 +2,11 @@ import { ArrowLeft, ArrowRight, Bell, Search, Upload } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "../ui/Button";
+import { useAuthStore } from "../../stores/authStore";
 
 export function TopHeader() {
   const navigate = useNavigate();
+  const session = useAuthStore((state) => state.session);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -38,6 +40,7 @@ export function TopHeader() {
         <kbd>/</kbd>
       </form>
       <div className="top-header__actions">
+        {!session ? <Button size="sm" variant="secondary" onClick={() => navigate("/sign-in")}>Sign in</Button> : null}
         <Button size="sm" onClick={() => navigate("/upload")}><Upload size={16} /> Upload</Button>
         <button className="icon-button" onClick={() => navigate("/notifications")} aria-label="Notifications"><Bell size={18} /></button>
       </div>

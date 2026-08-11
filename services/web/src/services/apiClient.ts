@@ -5,7 +5,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, ""
 
 export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  Object.entries(getAuthHeaders()).forEach(([key, value]) => headers.set(key, String(value)));
+  Object.entries(await getAuthHeaders()).forEach(([key, value]) => headers.set(key, String(value)));
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
 
   let response: Response;

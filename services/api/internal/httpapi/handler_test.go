@@ -2,14 +2,95 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/project-cantaloupe/app-audio/services/api/internal/authn"
 )
+
+type stubAuthenticator struct {
+	subject string
+	err     error
+}
+
+func (authenticator stubAuthenticator) Subject(context.Context, string, string) (string, error) {
+	return authenticator.subject, authenticator.err
+}
+
+func TestRequiredAuthenticationRejectsAnonymousRequest(t *testing.T) {
+	handler := &Handler{
+		auth:   stubAuthenticator{},
+		logger: log.New(io.Discard, "", 0),
+	}
+	response := httptest.NewRecorder()
+	handler.authenticate(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("anonymous request reached a protected handler")
+	})(response, httptest.NewRequest(http.MethodPost, "/v1/audios/uploads", nil))
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+	if got := response.Header().Get("WWW-Authenticate"); got != `Bearer realm="audio-api"` {
+		t.Fatalf("WWW-Authenticate = %q", got)
+	}
+}
+
+func TestOptionalAuthenticationAllowsAnonymousRequest(t *testing.T) {
+	handler := &Handler{
+		auth:   stubAuthenticator{},
+		logger: log.New(io.Discard, "", 0),
+	}
+	response := httptest.NewRecorder()
+	handler.optionalAuthenticate(func(w http.ResponseWriter, request *http.Request) {
+		if got := subject(request); got != "" {
+			t.Fatalf("subject = %q, want anonymous", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})(response, httptest.NewRequest(http.MethodGet, "/v1/audios?scope=public", nil))
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
+
+func TestOptionalAuthenticationRejectsInvalidToken(t *testing.T) {
+	handler := &Handler{
+		auth:   stubAuthenticator{err: authn.ErrInvalidCredentials},
+		logger: log.New(io.Discard, "", 0),
+	}
+	response := httptest.NewRecorder()
+	handler.optionalAuthenticate(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid token reached a public handler")
+	})(response, httptest.NewRequest(http.MethodGet, "/v1/audios?scope=public", nil))
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuthenticationAddsSubjectToRequestContext(t *testing.T) {
+	handler := &Handler{
+		auth:   stubAuthenticator{subject: "user-123"},
+		logger: log.New(io.Discard, "", 0),
+	}
+	response := httptest.NewRecorder()
+	handler.authenticate(func(w http.ResponseWriter, request *http.Request) {
+		if got := subject(request); got != "user-123" {
+			t.Fatalf("subject = %q, want user-123", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})(response, httptest.NewRequest(http.MethodPatch, "/v1/audios/audio-1", nil))
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
 
 func TestRequestLogEmitsStructuredFields(t *testing.T) {
 	var output bytes.Buffer

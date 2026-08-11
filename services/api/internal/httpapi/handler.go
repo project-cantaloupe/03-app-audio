@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/audio"
+	"github.com/project-cantaloupe/app-audio/services/api/internal/authn"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/health"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/observability"
 )
@@ -21,19 +22,20 @@ type Handler struct {
 	service *audio.Service
 	probe   *health.Probe
 	logger  *log.Logger
+	auth    authn.Authenticator
 }
 
-func New(service *audio.Service, probe *health.Probe, logger *log.Logger) http.Handler {
-	h := &Handler{service: service, probe: probe, logger: logger}
+func New(service *audio.Service, probe *health.Probe, logger *log.Logger, authenticator authn.Authenticator) http.Handler {
+	h := &Handler{service: service, probe: probe, logger: logger, auth: authenticator}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.HandleFunc("GET /readyz", h.ready)
-	mux.HandleFunc("POST /v1/audios/uploads", h.createUpload)
-	mux.HandleFunc("POST /v1/audios/{audio_id}/complete", h.completeUpload)
-	mux.HandleFunc("GET /v1/audios", h.listAudios)
-	mux.HandleFunc("GET /v1/audios/{audio_id}", h.getAudio)
-	mux.HandleFunc("PATCH /v1/audios/{audio_id}", h.updateAudio)
-	mux.HandleFunc("GET /v1/audios/{audio_id}/playback", h.getPlayback)
+	mux.HandleFunc("POST /v1/audios/uploads", h.authenticate(h.createUpload))
+	mux.HandleFunc("POST /v1/audios/{audio_id}/complete", h.authenticate(h.completeUpload))
+	mux.HandleFunc("GET /v1/audios", h.optionalAuthenticate(h.listAudios))
+	mux.HandleFunc("GET /v1/audios/{audio_id}", h.optionalAuthenticate(h.getAudio))
+	mux.HandleFunc("PATCH /v1/audios/{audio_id}", h.authenticate(h.updateAudio))
+	mux.HandleFunc("GET /v1/audios/{audio_id}/playback", h.optionalAuthenticate(h.getPlayback))
 	return requestLog(logger, mux)
 }
 
@@ -171,9 +173,35 @@ func (h *Handler) ready(w http.ResponseWriter, _ *http.Request) {
 }
 
 func subject(r *http.Request) string {
-	// 개발 단계 전용 경계다. Cognito 검증기가 추가되기 전에는 외부 배포에서
-	// 이 헤더를 신뢰하면 안 된다.
-	return strings.TrimSpace(r.Header.Get("X-Cantaloupe-Subject"))
+	subject, _ := r.Context().Value(subjectContextKey{}).(string)
+	return subject
+}
+
+type subjectContextKey struct{}
+
+func (h *Handler) authenticate(next http.HandlerFunc) http.HandlerFunc {
+	return h.resolveIdentity(next, true)
+}
+
+func (h *Handler) optionalAuthenticate(next http.HandlerFunc) http.HandlerFunc {
+	return h.resolveIdentity(next, false)
+}
+
+func (h *Handler) resolveIdentity(next http.HandlerFunc, required bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subject, err := h.auth.Subject(
+			r.Context(),
+			r.Header.Get("Authorization"),
+			r.Header.Get("X-Cantaloupe-Subject"),
+		)
+		if err != nil || (required && subject == "") {
+			h.logger.Printf("authentication rejected path=%s", r.URL.Path)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="audio-api"`)
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "valid authentication credentials are required")
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), subjectContextKey{}, subject)))
+	}
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, destination any) error {

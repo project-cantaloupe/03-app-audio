@@ -40,8 +40,8 @@ export function Sidebar() {
       <div className="sidebar__account">
         <div className="avatar" aria-hidden="true">{session?.subject.slice(0, 1).toUpperCase() ?? "?"}</div>
         <div>
-          <strong>{session ? "Development session" : "Signed out"}</strong>
-          <span>{session?.subject ?? "Connect identity provider"}</span>
+          <strong>{session?.displayName ?? "Signed out"}</strong>
+          <span>{session ? `${session.mode} session` : "Connect identity provider"}</span>
         </div>
       </div>
     </aside>

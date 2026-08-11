@@ -123,7 +123,7 @@ export function UploadPage() {
         {["Select file", "Upload", "Process", "Add details", "Publish"].map((label, index) => <li key={label} className={index < currentStep || stage === "ready" ? "is-complete" : index === currentStep ? "is-current" : ""}><span>{index < currentStep || stage === "ready" ? <Check size={15} /> : index + 1}</span><small>{label}</small></li>)}
       </ol>
 
-      {!session ? <div className="notice notice--warning" role="alert"><AlertCircle /><div><strong>An authenticated session is required</strong><p>Configure the development subject locally or connect Cognito before uploading.</p></div></div> : null}
+      {!session ? <div className="notice notice--warning" role="alert"><AlertCircle /><div><strong>An authenticated session is required</strong><p><Link to="/sign-in">Sign in with Keycloak</Link> or configure the development subject locally before uploading.</p></div></div> : null}
 
       <form className="upload-workspace" onSubmit={runUpload}>
         <div

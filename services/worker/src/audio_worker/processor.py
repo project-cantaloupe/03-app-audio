@@ -94,6 +94,11 @@ class Processor:
             except Exception as error:
                 raise WorkerError("ARTIFACT_UPLOAD_FAILED", retryable=True) from error
 
+            # TemporaryDirectory가 정리되기 전에 로컬 파일 크기를 숫자로 보존한다.
+            # 이 값은 result contract가 아니라 성공 로그용 telemetry다.
+            input_bytes = source_path.stat().st_size
+            output_bytes = playback_path.stat().st_size
+
         return ProcessedTranscode(
             event=result_event(
                 job,
@@ -106,8 +111,8 @@ class Processor:
                     "waveform_key": waveform_key,
                 },
             ),
-            input_bytes=source_path.stat().st_size,
-            output_bytes=playback_path.stat().st_size,
+            input_bytes=input_bytes,
+            output_bytes=output_bytes,
         )
 
     def _verify_source(self, job: TranscodeJob) -> None:

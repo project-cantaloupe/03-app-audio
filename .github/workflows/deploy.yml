@@ -145,16 +145,47 @@ jobs:
           docker build --tag "$harbor_image" --file services/worker/Dockerfile services/worker
           docker push "$harbor_image"
 
-      # Future security gates (for example, Trivy) belong here. Only images
-      # sourced from Harbor are promoted to the deployment registry below.
+      # Wait for Trivy scan before promoting
       - name: Promote Harbor images to Amazon ECR
         env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
           set -euo pipefail
+          wait_for_scan() {
+            local harbor_repository="$1"
+            local url="https://$HARBOR_REGISTRY/api/v2.0/projects/$HARBOR_PROJECT/repositories/$harbor_repository/artifacts/${GITHUB_SHA}?with_scan_overview=true"
+            local max_attempts=30
+            local attempt=1
+            echo "Waiting for Trivy scan on $harbor_repository..."
+            
+            while [ $attempt -le $max_attempts ]; do
+              local res=$(curl -sS -f -u "$HARBOR_USERNAME:$HARBOR_PASSWORD" "$url") || { echo "Failed to fetch scan status"; sleep 10; attempt=$((attempt + 1)); continue; }
+              local status=$(echo "$res" | jq -r '.scan_overview[]?.scan_status // "Pending"')
+              
+              if [ "$status" = "Success" ]; then
+                echo "Scan finished successfully."
+                return 0
+              elif [ "$status" = "Error" ]; then
+                echo "Scan failed!"
+                return 1
+              fi
+              
+              echo "Scan status: $status. Retrying in 10s... ($attempt/$max_attempts)"
+              sleep 10
+              attempt=$((attempt + 1))
+            done
+            echo "Timeout waiting for scan."
+            return 1
+          }
+
           promote() {
             local harbor_repository="$1"
             local ecr_repository="$2"
+            
+            wait_for_scan "$harbor_repository"
+            
             local harbor_image="$HARBOR_REGISTRY/$HARBOR_PROJECT/$harbor_repository:${GITHUB_SHA}"
             local ecr_image="$ECR_REGISTRY/$ecr_repository:${GITHUB_SHA}"
             docker pull "$harbor_image"

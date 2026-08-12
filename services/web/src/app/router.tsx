@@ -36,7 +36,7 @@ export const router = createBrowserRouter([
       { path: "/creator/:creatorId", element: load(<CreatorPage />) },
       { path: "/playlist/:playlistId", element: load(<PlaylistPage />) },
       { path: "/library", element: <Navigate to="/discover" replace /> },
-      { path: "/upload", element: authDisabled ? <Navigate to="/discover" replace /> : load(<UploadPage />) },
+      { path: "/upload", element: load(<UploadPage />) },
       { path: "/notifications", element: load(<NotificationsPage />) },
       { path: "/settings", element: load(<SettingsPage />) },
     ],

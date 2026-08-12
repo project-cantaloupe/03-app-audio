@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,19 +20,23 @@ import (
 )
 
 type Handler struct {
-	service *audio.Service
-	probe   *health.Probe
-	logger  *log.Logger
-	auth    authn.Authenticator
+	service          *audio.Service
+	probe            *health.Probe
+	logger           *log.Logger
+	auth             authn.Authenticator
+	anonymousUploads *anonymousUploadLimiter
 }
 
 func New(service *audio.Service, probe *health.Probe, logger *log.Logger, authenticator authn.Authenticator) http.Handler {
-	h := &Handler{service: service, probe: probe, logger: logger, auth: authenticator}
+	h := &Handler{
+		service: service, probe: probe, logger: logger, auth: authenticator,
+		anonymousUploads: &anonymousUploadLimiter{},
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.HandleFunc("GET /readyz", h.ready)
-	mux.HandleFunc("POST /v1/audios/uploads", h.authenticate(h.createUpload))
-	mux.HandleFunc("POST /v1/audios/{audio_id}/complete", h.authenticate(h.completeUpload))
+	mux.HandleFunc("POST /v1/audios/uploads", h.optionalAuthenticate(h.createUpload))
+	mux.HandleFunc("POST /v1/audios/{audio_id}/complete", h.optionalAuthenticate(h.completeUpload))
 	mux.HandleFunc("GET /v1/audios", h.optionalAuthenticate(h.listAudios))
 	mux.HandleFunc("GET /v1/audios/{audio_id}", h.optionalAuthenticate(h.getAudio))
 	mux.HandleFunc("PATCH /v1/audios/{audio_id}", h.authenticate(h.updateAudio))
@@ -57,6 +62,11 @@ func (h *Handler) createUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_JSON", err.Error())
 		return
 	}
+	if subject(r) == "" && h.anonymousUploads != nil && !h.anonymousUploads.allow(time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "UPLOAD_RATE_LIMITED", "public upload limit exceeded; try again shortly")
+		return
+	}
 	result, err := h.service.CreateUpload(r.Context(), audio.CreateUploadInput{
 		OwnerSubject: subject(r), Title: body.Title, ContentType: body.ContentType,
 		ContentLength: body.ContentLength, ChecksumSHA256: body.ChecksumSHA256,
@@ -75,7 +85,12 @@ func (h *Handler) createUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request) {
-	result, err := h.service.CompleteUpload(r.Context(), subject(r), r.PathValue("audio_id"))
+	result, err := h.service.CompleteUpload(
+		r.Context(),
+		subject(r),
+		r.PathValue("audio_id"),
+		r.Header.Get("X-Cantaloupe-Upload-Token"),
+	)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -178,6 +193,29 @@ func subject(r *http.Request) string {
 }
 
 type subjectContextKey struct{}
+
+const anonymousUploadsPerMinute = 5
+
+type anonymousUploadLimiter struct {
+	mu            sync.Mutex
+	windowStarted time.Time
+	count         int
+}
+
+func (limiter *anonymousUploadLimiter) allow(now time.Time) bool {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+
+	if limiter.windowStarted.IsZero() || now.Before(limiter.windowStarted) || now.Sub(limiter.windowStarted) >= time.Minute {
+		limiter.windowStarted = now
+		limiter.count = 0
+	}
+	if limiter.count >= anonymousUploadsPerMinute {
+		return false
+	}
+	limiter.count++
+	return true
+}
 
 func (h *Handler) authenticate(next http.HandlerFunc) http.HandlerFunc {
 	return h.resolveIdentity(next, true)

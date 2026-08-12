@@ -83,9 +83,10 @@ VITE_API_BASE_URL  비우면 같은 출처로 호출
 ```
 
 공개 사용자 Identity가 준비되지 않은 운영 환경은 `authMode: disabled`를 사용한다.
-이 모드에서 Web은 로그인·가입·업로드를 노출하지 않고 공개 카탈로그만 제공한다.
-API의 `AUTH_MODE=disabled`는 Bearer Token과 개발용 Subject Header를 모두 무시해
-인증 필수 Endpoint를 `401`로 닫는다.
+이 모드에서 Web은 로그인·가입 없이 공개 카탈로그와 제한된 Public Upload를
+제공한다. 익명 업로드는 Public으로만 생성되고 25 MiB 이하로 제한되며, 세션 생성
+시 받은 Upload ID를 완료 요청의 capability로 다시 제시한다. Private Upload와
+공개 여부 변경은 계속 인증 필수다.
 
 향후 Public Audio Realm이 준비되면 OIDC 설정을
 `02-k8s-manifests/apps/audio/web/runtime-config.yaml`에서 관리한다.
@@ -121,7 +122,9 @@ API가 다른 서비스용 토큰으로 판단해 `401`을 반환한다.
 POST   /v1/audios/uploads          업로드 세션 생성. Presigned PUT URL 발급
                                    title, content_type, content_length,
                                    checksum_sha256, visibility(선택, 기본 private)
-POST   /v1/audios/{id}/complete    업로드 확정. 크기·타입·버전 검증 후 스캔 제출
+                                   익명 요청은 public·25 MiB 이하만 허용
+POST   /v1/audios/{id}/complete    업로드 확정. 익명 요청은 생성 응답의 upload_id를
+                                   X-Cantaloupe-Upload-Token으로 제시
 GET    /v1/audios                  본인 트랙 목록. 상태 무관, 최신순
 GET    /v1/audios?scope=public     공개 카탈로그. 소유자 무관, public + READY만
 GET    /v1/audios/{id}             상세. 비공개는 소유자만

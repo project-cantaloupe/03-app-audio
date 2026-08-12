@@ -8,8 +8,8 @@ Cantaloupe 오디오 서비스의 React·TypeScript 프론트엔드다. `service
 - `/`: 시네마틱 영상 배경의 단일 화면 랜딩
 - `/discover`, `/search`: 공개 Audio 목록의 실제 empty/error 상태
 - `/library`: 사람용 Private 소유권을 제공하기 전까지 `/discover`로 이동
-- `/upload`: 인증 사용 환경에서 Public Audio 생성, SHA-256 계산, Presigned PUT,
-  실제 전송률, 완료 검증, 처리 상태 polling
+- `/upload`: Public Audio 생성, SHA-256 계산, Presigned PUT, 실제 전송률, 완료 검증,
+  처리 상태 polling. 인증을 끈 공개 데모에서는 익명 Public Upload로 동작
 - `/track/:trackId`: 실제 오디오 상태, 만료 재생 URL과 waveform JSON 조회. Web에서는
   공개·비공개 전환을 제공하지 않음
 - 전역 Player: 단일 HTML audio, Zustand 상태와 사전 생성 peak 기반 Wavesurfer
@@ -58,9 +58,10 @@ secret 같은 비밀 값은 넣지 않는다. `VITE_AUTH_MODE=development`와
 `VITE_DEV_SUBJECT`는 로컬 API 검증에만 사용한다.
 
 공개 사용자 Identity가 준비되지 않은 운영 환경은 `authMode: "disabled"`를
-사용한다. Web은 로그인·가입·업로드·Library 진입점을 숨기고 인증 Header를 만들지
-않으며, 공개 카탈로그 탐색은 계속 제공한다. API의 Private 기능은 FinOps 같은 내부
-서비스 계정용으로 유지되지만 Web Upload는 인증이 활성화돼도 항상 Public으로 만든다.
+사용한다. Web은 로그인·가입·Library 진입점을 숨기고 인증 Header를 만들지 않지만,
+공개 카탈로그와 익명 Public Upload는 제공한다. 익명 업로드는 파일당 25 MiB 이하이며
+세션의 Upload ID를 완료 요청에만 쓰는 capability로 보낸다. Web Upload는 인증이
+활성화돼도 항상 Public으로 만든다.
 
 향후 Keycloak 연결은 Audio 전용 Public Realm의 SPA Client와 Authorization Code +
 PKCE를 사용한다.

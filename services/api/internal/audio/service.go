@@ -3,12 +3,15 @@ package audio
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
+
+const anonymousPublicOwnerPrefix = "anonymous-public-upload:"
 
 type Repository interface {
 	CreateUpload(context.Context, Audio) error
@@ -66,9 +69,6 @@ func (s *Service) CreateUpload(ctx context.Context, input CreateUploadInput) (Cr
 	input.Title = strings.TrimSpace(input.Title)
 	input.ContentType = normalizeContentType(input.ContentType)
 
-	if input.OwnerSubject == "" {
-		return CreateUploadOutput{}, ErrUnauthorized
-	}
 	if input.Title == "" || len([]rune(input.Title)) > 200 {
 		return CreateUploadOutput{}, fmt.Errorf("%w: title must contain 1 to 200 characters", ErrInvalidInput)
 	}
@@ -88,10 +88,26 @@ func (s *Service) CreateUpload(ctx context.Context, input CreateUploadInput) (Cr
 	if input.Visibility != VisibilityPrivate && input.Visibility != VisibilityPublic {
 		return CreateUploadOutput{}, fmt.Errorf("%w: visibility must be private or public", ErrInvalidInput)
 	}
+	anonymousPublic := input.OwnerSubject == ""
+	if anonymousPublic && input.Visibility != VisibilityPublic {
+		return CreateUploadOutput{}, ErrUnauthorized
+	}
+	if anonymousPublic && input.ContentLength > MaxAnonymousPublicUploadBytes {
+		return CreateUploadOutput{}, fmt.Errorf(
+			"%w: anonymous public uploads must not exceed %d bytes",
+			ErrInvalidInput,
+			MaxAnonymousPublicUploadBytes,
+		)
+	}
 
 	now := s.clock.Now().UTC()
 	audioID := s.ids.New()
 	uploadID := s.ids.New()
+	if anonymousPublic {
+		// 익명 공개 업로드는 사용자 계정 대신 서버가 만든 Upload ID에 묶는다.
+		// 이 값은 공개 Audio 응답에 포함되지 않으며 완료 요청의 capability다.
+		input.OwnerSubject = anonymousPublicOwnerPrefix + uploadID
+	}
 	record := Audio{
 		ID: audioID, OwnerSubject: input.OwnerSubject, Title: input.Title,
 		Visibility: input.Visibility, Status: StatusUploadPending, UploadID: uploadID,
@@ -123,15 +139,19 @@ func (s *Service) CreateUpload(ctx context.Context, input CreateUploadInput) (Cr
 	}, nil
 }
 
-func (s *Service) CompleteUpload(ctx context.Context, ownerSubject, audioID string) (Audio, error) {
-	if strings.TrimSpace(ownerSubject) == "" {
-		return Audio{}, ErrUnauthorized
-	}
+func (s *Service) CompleteUpload(ctx context.Context, ownerSubject, audioID, uploadCapability string) (Audio, error) {
 	record, err := s.repository.GetAudio(ctx, audioID)
 	if err != nil {
 		return Audio{}, err
 	}
-	if record.OwnerSubject != ownerSubject {
+	ownerSubject = strings.TrimSpace(ownerSubject)
+	if ownerSubject == "" {
+		capability := strings.TrimSpace(uploadCapability)
+		matches := subtle.ConstantTimeCompare([]byte(record.UploadID), []byte(capability)) == 1
+		if record.Visibility != VisibilityPublic || capability == "" || !matches {
+			return Audio{}, ErrForbidden
+		}
+	} else if record.OwnerSubject != ownerSubject {
 		return Audio{}, ErrForbidden
 	}
 	if record.UploadVerified {

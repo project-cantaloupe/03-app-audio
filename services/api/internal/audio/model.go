@@ -2,7 +2,10 @@ package audio
 
 import "time"
 
-const MaxUploadBytes int64 = 100 * 1024 * 1024
+const (
+	MaxUploadBytes                int64 = 100 * 1024 * 1024
+	MaxAnonymousPublicUploadBytes int64 = 25 * 1024 * 1024
+)
 
 type Status string
 

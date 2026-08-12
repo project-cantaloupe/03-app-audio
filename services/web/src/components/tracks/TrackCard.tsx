@@ -15,7 +15,7 @@ export function TrackCard({ track, queue = [track] }: { track: Track; queue?: Tr
       </div>
       <div className="track-card__copy">
         <Link to={`/track/${track.id}`}><strong>{track.title}</strong></Link>
-        <span>{track.creator?.displayName ?? "Creator metadata unavailable"}</span>
+        <span>{track.creator?.displayName ?? "Public audio"}</span>
         <small>{track.genres.join(" · ") || "Category unavailable"} · {formatTime(track.durationSeconds)}</small>
       </div>
       <div className="track-card__actions">

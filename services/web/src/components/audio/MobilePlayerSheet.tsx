@@ -18,7 +18,7 @@ export function MobilePlayerSheet() {
       <button className="mobile-player-sheet__close" onClick={() => setOpen(false)} aria-label="Close player"><ChevronDown size={28} /></button>
       <SignalArtwork label={track.title} />
       <div className="mobile-player-sheet__title">
-        <div><p className="eyebrow">NOW PLAYING</p><h2>{track.title}</h2><span>{track.creator?.displayName ?? "Creator metadata unavailable"}</span></div>
+        <div><p className="eyebrow">NOW PLAYING</p><h2>{track.title}</h2><span>{track.creator?.displayName ?? "Public audio"}</span></div>
         <button className="icon-button" aria-label="Like track" disabled><Heart size={21} /></button>
       </div>
       {track.waveform ? <LiveWaveform waveform={track.waveform} trackId={track.id} variant="sheet" interactive /> : <div className="player__empty-wave" aria-hidden="true" />}

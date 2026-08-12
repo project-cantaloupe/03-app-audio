@@ -14,7 +14,7 @@ function CatalogRow({ record }: { record: AudioRecord }) {
       <span aria-hidden="true" />
       <div>
         <Link to={`/track/${record.id}`}>{record.title}</Link>
-        <span>Creator profiles arrive with the metadata API</span>
+        <span>Public audio</span>
       </div>
       <span className="track-row__category">Public</span>
       <span className="track-row__date">{new Date(record.created_at).toLocaleDateString()}</span>

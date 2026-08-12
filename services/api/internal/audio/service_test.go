@@ -136,6 +136,99 @@ func TestCreateUploadRejectsOversizedObject(t *testing.T) {
 	}
 }
 
+func TestCreateUploadAllowsAnonymousPublicUpload(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"audio-id", "upload-id"}}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+
+	result, err := service.CreateUpload(context.Background(), CreateUploadInput{
+		Title: "public demo", ContentType: "audio/wav", ContentLength: 1024,
+		ChecksumSHA256: validChecksum(), Visibility: VisibilityPublic,
+	})
+	if err != nil {
+		t.Fatalf("CreateUpload() error = %v", err)
+	}
+	if result.AudioID != "audio-id" || result.UploadID != "upload-id" {
+		t.Fatalf("unexpected upload identifiers: %#v", result)
+	}
+	if repository.record.OwnerSubject != anonymousPublicOwnerPrefix+"upload-id" {
+		t.Fatalf("anonymous owner = %q", repository.record.OwnerSubject)
+	}
+	if repository.record.Visibility != VisibilityPublic {
+		t.Fatalf("visibility = %q, want public", repository.record.Visibility)
+	}
+}
+
+func TestCreateUploadRejectsAnonymousPrivateUpload(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+
+	_, err := service.CreateUpload(context.Background(), CreateUploadInput{
+		Title: "private demo", ContentType: "audio/wav", ContentLength: 1024,
+		ChecksumSHA256: validChecksum(), Visibility: VisibilityPrivate,
+	})
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
+	}
+}
+
+func TestCreateUploadRejectsOversizedAnonymousPublicUpload(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+
+	_, err := service.CreateUpload(context.Background(), CreateUploadInput{
+		Title: "large public demo", ContentType: "audio/wav",
+		ContentLength:  MaxAnonymousPublicUploadBytes + 1,
+		ChecksumSHA256: validChecksum(), Visibility: VisibilityPublic,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}
+
+func TestCompleteUploadAllowsAnonymousPublicUploadWithCapability(t *testing.T) {
+	checksum := validChecksum()
+	repository := &fakeRepository{record: Audio{
+		ID: "audio-id", UploadID: "upload-id", OwnerSubject: anonymousPublicOwnerPrefix + "upload-id",
+		Visibility: VisibilityPublic, Status: StatusUploadPending,
+		SourceSize: 10, SourceContentType: "audio/mpeg", SourceChecksum: checksum,
+	}}
+	service := NewService(repository, fakeObjectStore{object: SourceObject{
+		VersionID: "v1", ContentLength: 10, ContentType: "audio/mpeg",
+	}}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"job-id", "event-id"}}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+
+	if _, err := service.CompleteUpload(context.Background(), "", "audio-id", "upload-id"); err != nil {
+		t.Fatalf("CompleteUpload() error = %v", err)
+	}
+}
+
+func TestCompleteUploadRejectsInvalidAnonymousCapability(t *testing.T) {
+	for _, capability := range []string{"", "wrong-upload-id"} {
+		t.Run(capability, func(t *testing.T) {
+			repository := &fakeRepository{record: Audio{
+				ID: "audio-id", UploadID: "upload-id", OwnerSubject: anonymousPublicOwnerPrefix + "upload-id",
+				Visibility: VisibilityPublic, Status: StatusUploadPending,
+			}}
+			service := NewService(repository, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+
+			_, err := service.CompleteUpload(context.Background(), "", "audio-id", capability)
+			if !errors.Is(err, ErrForbidden) {
+				t.Fatalf("expected ErrForbidden, got %v", err)
+			}
+		})
+	}
+}
+
+func TestCompleteUploadRejectsAnonymousCapabilityForPrivateUpload(t *testing.T) {
+	repository := &fakeRepository{record: Audio{
+		ID: "audio-id", UploadID: "upload-id", OwnerSubject: "owner",
+		Visibility: VisibilityPrivate, Status: StatusUploadPending,
+	}}
+	service := NewService(repository, fakeObjectStore{}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
+
+	_, err := service.CompleteUpload(context.Background(), "", "audio-id", "upload-id")
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
 func TestCompleteUploadRejectsSizeMismatch(t *testing.T) {
 	repository := &fakeRepository{record: Audio{
 		ID: "audio-id", UploadID: "upload-id", OwnerSubject: "owner", Status: StatusUploadPending,
@@ -145,7 +238,7 @@ func TestCompleteUploadRejectsSizeMismatch(t *testing.T) {
 		VersionID: "v1", ContentLength: 11, ContentType: "audio/mpeg",
 	}}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"job-id", "event-id"}}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
-	_, err := service.CompleteUpload(context.Background(), "owner", "audio-id")
+	_, err := service.CompleteUpload(context.Background(), "owner", "audio-id", "")
 	if !errors.Is(err, ErrObjectMismatch) {
 		t.Fatalf("expected ErrObjectMismatch, got %v", err)
 	}
@@ -163,7 +256,7 @@ func TestCompleteUploadAcceptsObjectWithoutStoredChecksum(t *testing.T) {
 		VersionID: "v1", ContentLength: 10, ContentType: "audio/mpeg", ChecksumSHA256: "",
 	}}, &fakeScanAdapter{}, fakeArtifactSigner{}, &sequenceIDs{values: []string{"job-id", "event-id"}}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
-	if _, err := service.CompleteUpload(context.Background(), "owner", "audio-id"); err != nil {
+	if _, err := service.CompleteUpload(context.Background(), "owner", "audio-id", ""); err != nil {
 		t.Fatalf("CompleteUpload() error = %v", err)
 	}
 }
@@ -183,7 +276,7 @@ func TestCompleteUploadSubmitsStableCleanResultBeforeVerification(t *testing.T) 
 		ChecksumSHA256: checksum,
 	}}, scanAdapter, fakeArtifactSigner{}, &sequenceIDs{values: []string{"job-id", "event-id"}}, fixedClock{value: now}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
-	result, err := service.CompleteUpload(context.Background(), "owner", "audio-id")
+	result, err := service.CompleteUpload(context.Background(), "owner", "audio-id", "")
 	if err != nil {
 		t.Fatalf("CompleteUpload() error = %v", err)
 	}
@@ -214,7 +307,7 @@ func TestCompleteUploadDoesNotVerifyWhenScanSubmissionFails(t *testing.T) {
 		ChecksumSHA256: checksum,
 	}}, &fakeScanAdapter{err: errors.New("queue unavailable")}, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
-	_, err := service.CompleteUpload(context.Background(), "owner", "audio-id")
+	_, err := service.CompleteUpload(context.Background(), "owner", "audio-id", "")
 	if err == nil {
 		t.Fatal("expected scan submission failure")
 	}
@@ -231,7 +324,7 @@ func TestCompleteUploadDoesNotRepublishVerifiedUpload(t *testing.T) {
 	scanAdapter := &fakeScanAdapter{}
 	service := NewService(repository, fakeObjectStore{}, scanAdapter, fakeArtifactSigner{}, &sequenceIDs{}, fixedClock{}, "cntlp-aws-quarantine", 15*time.Minute, 3*time.Hour)
 
-	_, err := service.CompleteUpload(context.Background(), "owner", "audio-id")
+	_, err := service.CompleteUpload(context.Background(), "owner", "audio-id", "")
 	if err != nil {
 		t.Fatalf("CompleteUpload() error = %v", err)
 	}

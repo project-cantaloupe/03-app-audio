@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
 import { listAudios, trackKeys } from "../services/trackService";
-import { useAuthStore } from "../stores/authStore";
 import type { AudioRecord } from "../types/audio";
 import { formatTime } from "../utils/time";
 
@@ -27,7 +26,6 @@ function CatalogRow({ record }: { record: AudioRecord }) {
 
 // 공개 카탈로그다. 소유자를 가리지 않고, 서버가 public + READY 로 좁혀 준다.
 function Catalog() {
-  const authDisabled = useAuthStore((state) => state.mode === "disabled");
   const query = useInfiniteQuery({
     queryKey: trackKeys.publicList(),
     queryFn: ({ pageParam }) => listAudios({ scope: "public", cursor: pageParam }),
@@ -61,7 +59,7 @@ function Catalog() {
       <EmptyState
         title="The catalog is quiet"
         description="Public tracks appear here after their audio processing completes."
-        action={authDisabled ? undefined : (
+        action={(
           <Link className="button button--primary button--md" to="/upload">
             Upload a track
           </Link>

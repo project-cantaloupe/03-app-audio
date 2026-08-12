@@ -7,17 +7,16 @@ import {
 import { NavLink } from "react-router-dom";
 import { useAuthStore } from "../../stores/authStore";
 
-const publicLinks = [
+const links = [
   { to: "/discover", label: "Discover", icon: Compass },
+  { to: "/upload", label: "Upload", icon: Upload },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
-const uploadLink = { to: "/upload", label: "Upload", icon: Upload };
 
 export function Sidebar() {
   const authMode = useAuthStore((state) => state.mode);
   const session = useAuthStore((state) => state.session);
   const publicOnly = authMode === "disabled";
-  const links = publicOnly ? publicLinks : [publicLinks[0], uploadLink, publicLinks[1]];
   return (
     <aside className="sidebar" aria-label="Primary navigation">
       <NavLink to="/" className="brand" aria-label="Cantaloupe home">

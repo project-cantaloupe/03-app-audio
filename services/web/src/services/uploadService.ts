@@ -78,9 +78,10 @@ export function uploadFile(
   });
 }
 
-export function completeUpload(audioId: string) {
+export function completeUpload(audioId: string, uploadToken: string) {
   return apiRequest<AudioRecord>(`/v1/audios/${encodeURIComponent(audioId)}/complete`, {
     method: "POST",
+    headers: { "X-Cantaloupe-Upload-Token": uploadToken },
   });
 }
 

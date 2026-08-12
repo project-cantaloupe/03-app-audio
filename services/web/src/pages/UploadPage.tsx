@@ -11,7 +11,8 @@ import { completeUpload, createUpload, resolveContentType, uploadFile } from "..
 import type { AudioRecord } from "../types/audio";
 import { formatBytes } from "../utils/time";
 
-const maximumBytes = 100 * 1024 * 1024;
+const authenticatedMaximumBytes = 100 * 1024 * 1024;
+const publicMaximumBytes = 25 * 1024 * 1024;
 const terminalStatuses = new Set(["READY", "QUARANTINED", "SCAN_FAILED", "TRANSCODE_FAILED", "DELETED"]);
 
 const stageIndex: Record<UploadStage, number> = {
@@ -29,6 +30,10 @@ export function UploadPage() {
   const abortRef = useRef<AbortController | null>(null);
   const session = useAuthStore((state) => state.session);
   const authMode = useAuthStore((state) => state.mode);
+  const publicUpload = authMode === "disabled";
+  const canUpload = publicUpload || Boolean(session);
+  const maximumBytes = publicUpload ? publicMaximumBytes : authenticatedMaximumBytes;
+  const maximumMegabytes = maximumBytes / (1024 * 1024);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -73,7 +78,7 @@ export function UploadPage() {
       return;
     }
     if (next.size <= 0 || next.size > maximumBytes) {
-      setError("Select an audio file between 1 byte and 100 MB.");
+      setError(`Select an audio file between 1 byte and ${maximumMegabytes} MB.`);
       return;
     }
     setFile(next);
@@ -88,7 +93,7 @@ export function UploadPage() {
 
   const runUpload = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (!file || !title.trim() || !session) return;
+    if (!file || !title.trim() || !canUpload) return;
     const controller = new AbortController();
     abortRef.current = controller;
     setError(null);
@@ -99,7 +104,7 @@ export function UploadPage() {
       setStage("uploading");
       await uploadFile(nextSession, file, ({ transferred: sent, total: size }) => setProgress(sent, size), controller.signal);
       setStage("verifying");
-      const completed = await completeUpload(nextSession.audioId);
+      const completed = await completeUpload(nextSession.audioId, nextSession.uploadId);
       setRecord(completed);
       setStage("processing");
     } catch (uploadError) {
@@ -122,7 +127,7 @@ export function UploadPage() {
         {["Select file", "Upload", "Process", "Add details", "Publish"].map((label, index) => <li key={label} className={index < currentStep || stage === "ready" ? "is-complete" : index === currentStep ? "is-current" : ""}><span>{index < currentStep || stage === "ready" ? <Check size={15} /> : index + 1}</span><small>{label}</small></li>)}
       </ol>
 
-      {!session ? <div className="notice notice--warning" role="alert"><AlertCircle /><div><strong>{authMode === "disabled" ? "Uploads are temporarily unavailable" : "An authenticated session is required"}</strong><p>{authMode === "disabled" ? <>Public Audio identity is being separated from the internal operator realm. <Link to="/discover">Browse public audio</Link> while sign-in and sign-up are unavailable.</> : <><Link to="/sign-in">Sign in with Keycloak</Link> or configure the development subject locally before uploading.</>}</p></div></div> : null}
+      {publicUpload ? <div className="notice" role="status"><UploadCloud /><div><strong>Public demo upload</strong><p>This track will be visible in Discover after processing. Anonymous public uploads are limited to 25 MB and cannot be made private later.</p></div></div> : !session ? <div className="notice notice--warning" role="alert"><AlertCircle /><div><strong>An authenticated session is required</strong><p><Link to="/sign-in">Sign in with Keycloak</Link> or configure the development subject locally before uploading.</p></div></div> : null}
 
       <form className="upload-workspace" onSubmit={runUpload}>
         <div
@@ -132,7 +137,7 @@ export function UploadPage() {
           onDrop={onDrop}
         >
           <input ref={inputRef} type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/flac,audio/aac,audio/ogg" onChange={(event) => selectFile(event.target.files?.item(0) ?? null)} />
-          {file ? <><div className="drop-zone__icon"><FileAudio /></div><div><strong>{file.name}</strong><span>{formatBytes(file.size)} · {file.type}</span></div><button type="button" className="icon-button" onClick={() => { setFile(null); setTitle(""); reset(); }} aria-label="Remove selected file"><X /></button></> : <><div className="drop-zone__icon"><UploadCloud /></div><div><strong>Drop one audio file here</strong><span>MP3, WAV, FLAC, AAC, or OGG · up to 100 MB</span></div><Button type="button" variant="secondary" onClick={() => inputRef.current?.click()}>Choose file</Button></>}
+          {file ? <><div className="drop-zone__icon"><FileAudio /></div><div><strong>{file.name}</strong><span>{formatBytes(file.size)} · {file.type}</span></div><button type="button" className="icon-button" onClick={() => { setFile(null); setTitle(""); reset(); }} aria-label="Remove selected file"><X /></button></> : <><div className="drop-zone__icon"><UploadCloud /></div><div><strong>Drop one audio file here</strong><span>MP3, WAV, FLAC, AAC, or OGG · up to {maximumMegabytes} MB</span></div><Button type="button" variant="secondary" onClick={() => inputRef.current?.click()}>Choose file</Button></>}
         </div>
 
         <div className="upload-form-panel">
@@ -147,7 +152,7 @@ export function UploadPage() {
             {stage === "uploading" ? <Button variant="secondary" onClick={cancel}>Cancel upload</Button> : null}
             {stage === "failed" ? <Button variant="secondary" onClick={() => { reset(); void runUpload(); }}><RefreshCcw size={16} /> Retry</Button> : null}
             {stage === "ready" && record ? <Link className="button button--primary button--md" to={`/track/${record.id}`}>Open track</Link> : null}
-            {stage === "idle" ? <Button type="submit" disabled={!file || !title.trim() || !session}>Prepare upload</Button> : null}
+            {stage === "idle" ? <Button type="submit" disabled={!file || !title.trim() || !canUpload}>Prepare upload</Button> : null}
           </div>
         </div>
       </form>

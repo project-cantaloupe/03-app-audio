@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/project-cantaloupe/app-audio/services/api/internal/authn"
@@ -108,6 +109,23 @@ func TestAuthenticationAddsSubjectToRequestContext(t *testing.T) {
 
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
+
+func TestAnonymousUploadLimiterResetsAfterOneMinute(t *testing.T) {
+	limiter := &anonymousUploadLimiter{}
+	now := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+
+	for request := 0; request < anonymousUploadsPerMinute; request++ {
+		if !limiter.allow(now) {
+			t.Fatalf("request %d was unexpectedly rate limited", request+1)
+		}
+	}
+	if limiter.allow(now) {
+		t.Fatal("request above the per-minute limit was allowed")
+	}
+	if !limiter.allow(now.Add(time.Minute)) {
+		t.Fatal("limiter did not reset after one minute")
 	}
 }
 

@@ -204,9 +204,24 @@ jobs:
           echo "changed=true" >> "$GITHUB_OUTPUT"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
-      - name: Enable automatic merge for GitOps promotion
+      - name: Merge GitOps promotion and notify Argo CD
         if: steps.promotion.outputs.changed == 'true'
         working-directory: manifests
         env:
           GH_TOKEN: ${{ secrets.MANIFESTS_TOKEN }}
-        run: gh pr merge "${{ steps.promotion.outputs.pr_url }}" --auto --squash --delete-branch
+        run: |
+          set -euo pipefail
+          gh pr merge "${{ steps.promotion.outputs.pr_url }}" --squash --delete-branch
+
+          # The runner is already on the private Tailscale network. Notify
+          # Argo CD immediately after the GitOps commit is merged instead of
+          # waiting for its periodic repository poll.
+          payload="$(jq -nc \
+            --arg sha "$GITHUB_SHA" \
+            --arg repo "https://github.com/project-cantaloupe/02-k8s-manifests" \
+            '{ref: "refs/heads/main", after: $sha, repository: {html_url: $repo, clone_url: ($repo + ".git")}}')"
+          curl --fail --silent --show-error \
+            --request POST "https://cntlp-onp-wk-01.tail270b85.ts.net/argocd/api/webhook" \
+            --header "Content-Type: application/json" \
+            --header "X-GitHub-Event: push" \
+            --data "$payload"

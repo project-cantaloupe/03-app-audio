@@ -203,6 +203,7 @@ jobs:
         with:
           payload: |
             {
+              "channel": "#trivy-alerts",
               "text": "🚨 *Trivy Scan Failed or Timed Out!*\n*Repository:* ${{ github.repository }}\n*Commit:* ${{ github.sha }}\n*Action:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Pipeline>"
             }
         env:

@@ -281,4 +281,4 @@ LocalStack용 더미 AWS 자격 증명과 PostgreSQL의 로컬 trust 인증은 C
 `shared/schema/` 를 바꾸면 api 와 worker 를 **같은 커밋에서** 맞춰야 한다.
 한쪽만 배포되면 메시지를 못 읽는다.
 
-CICD TEST
+CICD TEST/20260812-01

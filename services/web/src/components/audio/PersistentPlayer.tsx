@@ -74,7 +74,7 @@ export function PersistentPlayer() {
     return (
       <footer className="player player--idle" aria-label="Audio player">
         <div className="player__idle-signal" aria-hidden="true" />
-        <div><strong>Player ready</strong><span>Select an available track when the playback API is connected.</span></div>
+        <div><strong>Player ready</strong><span>Select a track to start listening.</span></div>
       </footer>
     );
   }
@@ -94,7 +94,7 @@ export function PersistentPlayer() {
         />
         <button className="player__track" onClick={() => setMobileOpen(true)} aria-label={`Open player for ${track.title}`}>
           <SignalArtwork label={track.title} compact />
-          <span><strong>{track.title}</strong><small>{track.creator?.displayName ?? "Creator metadata unavailable"}</small></span>
+          <span><strong>{track.title}</strong><small>{track.creator?.displayName ?? "Public audio"}</small></span>
         </button>
         <button className="icon-button player__like" disabled aria-label="Like track"><Heart size={17} /></button>
         <div className="player__center">

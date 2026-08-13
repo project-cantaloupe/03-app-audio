@@ -66,6 +66,19 @@ docker buildx build --platform linux/amd64 \
 매니페스트는 가변 `dev` 대신 커밋 SHA 태그를 사용한다. Argo CD는
 `02-k8s-manifests`의 태그 변경을 감지해 새 이미지를 배포한다.
 
+### Kubernetes 거버넌스 경계
+
+이 저장소는 Namespace를 생성하지 않는다. 애플리케이션 Pod는 `apps`, 외부
+Gateway는 `audio-ingress`에 배포되며 두 Namespace의 선언과 PSA·Kyverno 정책은
+`02-k8s-manifests/governance/`가 소유한다. 두 곳 모두 Resource Audit 대상이지만
+위반은 배포를 막지 않으며, requests/limits는 Grafana의 실제 사용량을 확인한 뒤
+조정한다.
+
+현재 이미지는 Harbor의 커밋 SHA 태그를 사용한다. `02-k8s-manifests`의
+ECR-only Registry 정책은 Audit 상태인 기존 결정 기록이므로 Harbor 배포를
+차단하지 않는다. Registry 정책이 Enforce로 바뀌기 전에는 CI의 Push 대상과
+런타임 Pull 대상을 함께 갱신해야 한다.
+
 ### Web 공개 설정
 
 `VITE_API_BASE_URL`은 빌드 시점에 번들로 굳힌다. 비우면 Web이 같은 출처의 API를

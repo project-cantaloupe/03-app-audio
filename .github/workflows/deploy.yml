@@ -90,9 +90,17 @@ jobs:
         env:
           MANIFESTS_TOKEN: ${{ secrets.MANIFESTS_TOKEN }}
           AWS_GITHUB_ACTIONS_ROLE_ARN: ${{ vars.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           if [ -z "$MANIFESTS_TOKEN" ] || [ -z "$AWS_GITHUB_ACTIONS_ROLE_ARN" ]; then
             echo "MANIFESTS_TOKEN and AWS_GITHUB_ACTIONS_ROLE_ARN must be configured before publishing images."
+            exit 1
+          fi
+          # Fail here rather than at notification time. A promotion gate whose
+          # alert has nowhere to go is worse than a pipeline that refuses to
+          # start, because the silence looks exactly like success.
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL must be configured so promotion-gate failures can be reported."
             exit 1
           fi
 
@@ -145,69 +153,182 @@ jobs:
           docker build --tag "$harbor_image" --file services/worker/Dockerfile services/worker
           docker push "$harbor_image"
 
-      # Wait for Trivy scan before promoting
+      # Wait for the Trivy scan, then judge what it found before promoting.
       - name: Promote Harbor images to Amazon ECR
         id: ecr-promotion
         env:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          # Mirrors deployment_security in
+          # 01-infra-provisioning/terraform/harbor/project.tf. Harbor remains the
+          # enforcing gate -- it refuses the pull on its own. Checking here only
+          # turns an opaque daemon error into a named failure with a report.
+          BLOCK_SEVERITY_AT: high
         run: |
           set -euo pipefail
+
+          scan_json=""
+
+          # Publishes why promotion stopped so the notify step can report it.
+          # Written before the step fails, so the outputs survive.
+          record_failure() {
+            {
+              printf 'fail_repository=%s\n' "$1"
+              printf 'fail_reason=%s\n'     "$2"
+              printf 'fail_detail=%s\n'     "$3"
+            } >> "$GITHUB_OUTPUT"
+            printf '::error::%s — %s — %s\n' "$1" "$2" "$3"
+          }
+
+          # Polls Harbor until the Trivy report reaches a terminal state and
+          # leaves the artifact JSON in $scan_json.
+          #
+          # scan_status only reports whether the scan RAN. An image with 44
+          # findings still reports Success -- what was found lives in
+          # .scan_overview[].severity and .summary.summary.
           wait_for_scan() {
-            local harbor_repository="$1"
-            local url="https://$HARBOR_REGISTRY/api/v2.0/projects/$HARBOR_PROJECT/repositories/$harbor_repository/artifacts/${GITHUB_SHA}?with_scan_overview=true"
-            local max_attempts=30
-            local attempt=1
+            harbor_repository="$1"
+            url="https://$HARBOR_REGISTRY/api/v2.0/projects/$HARBOR_PROJECT/repositories/$harbor_repository/artifacts/${GITHUB_SHA}?with_scan_overview=true"
+            attempt=1
             echo "Waiting for Trivy scan on $harbor_repository..."
-            
-            while [ $attempt -le $max_attempts ]; do
-              local res=$(curl -sS -f -u "$HARBOR_USERNAME:$HARBOR_PASSWORD" "$url") || { echo "Failed to fetch scan status"; sleep 10; attempt=$((attempt + 1)); continue; }
-              local status=$(echo "$res" | jq -r '.scan_overview[]?.scan_status // "Pending"')
-              
-              if [ "$status" = "Success" ]; then
-                echo "Scan finished successfully."
-                return 0
-              elif [ "$status" = "Error" ]; then
-                echo "Scan failed!"
-                return 1
+
+            while [ "$attempt" -le 30 ]; do
+              # Assigning inside `if` keeps curl's exit status. `local x=$(cmd)`
+              # would discard it -- `local` always returns 0.
+              if scan_json="$(curl -sS --fail-with-body -u "$HARBOR_USERNAME:$HARBOR_PASSWORD" "$url")"; then
+                status="$(printf '%s' "$scan_json" | jq -r '.scan_overview[]?.scan_status // "Pending"')"
+              else
+                status="Unreachable"
               fi
-              
-              echo "Scan status: $status. Retrying in 10s... ($attempt/$max_attempts)"
+
+              case "$status" in
+                Success)
+                  echo "Scan completed for $harbor_repository."
+                  return 0
+                  ;;
+                Error)
+                  record_failure "$harbor_repository" "Trivy 스캔 오류" \
+                    "Harbor 가 scan_status=Error 를 보고했다. 스캐너 어댑터 로그를 본다"
+                  return 1
+                  ;;
+              esac
+
+              echo "  scan_status=$status — 10s 후 재시도 ($attempt/30)"
               sleep 10
               attempt=$((attempt + 1))
             done
-            echo "Timeout waiting for scan."
+
+            record_failure "$harbor_repository" "Trivy 스캔 타임아웃" \
+              "300초 안에 리포트가 terminal 상태에 닿지 않았다"
             return 1
           }
 
+          # Decides whether a completed scan should stop promotion.
+          # Returns 0 to BLOCK promotion, 1 to allow it.
+          #
+          # Ranks the severity string instead of listing blocked names, so that
+          # following a terraform change means editing BLOCK_SEVERITY_AT alone.
+          # $2 carries the raw report but the verdict deliberately ignores it:
+          # the counts belong in the alert text, not in the rule. A rule that
+          # tolerates "some High" would disagree with Harbor, and Harbor is the
+          # one that actually refuses the pull.
+          scan_blocks_promotion() {
+            severity="$1"
+
+            rank() {
+              case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+                critical) echo 5 ;;
+                high)     echo 4 ;;
+                medium)   echo 3 ;;
+                low)      echo 2 ;;
+                none)     echo 1 ;;
+                *)        echo 0 ;;
+              esac
+            }
+
+            found="$(rank "$severity")"
+            threshold="$(rank "$BLOCK_SEVERITY_AT")"
+
+            # Fail closed. Rank 0 means either Harbor reported a severity we
+            # cannot place -- "Unknown", or a new name in some later release --
+            # or BLOCK_SEVERITY_AT itself is misconfigured. Not knowing what is
+            # in the image is not grounds for promoting it.
+            if [ "$found" -eq 0 ] || [ "$threshold" -eq 0 ]; then
+              echo "  판정 불가 (severity=$severity, BLOCK_SEVERITY_AT=$BLOCK_SEVERITY_AT) — 보수적으로 차단"
+              return 0
+            fi
+
+            [ "$found" -ge "$threshold" ]
+          }
+
           promote() {
-            local harbor_repository="$1"
-            local ecr_repository="$2"
-            
-            wait_for_scan "$harbor_repository"
-            
-            local harbor_image="$HARBOR_REGISTRY/$HARBOR_PROJECT/$harbor_repository:${GITHUB_SHA}"
-            local ecr_image="$ECR_REGISTRY/$ecr_repository:${GITHUB_SHA}"
-            docker pull "$harbor_image"
+            harbor_repository="$1"
+            ecr_repository="$2"
+
+            wait_for_scan "$harbor_repository" || return 1
+
+            severity="$(printf '%s' "$scan_json" | jq -r '.scan_overview[]?.severity // "Unknown"')"
+            total="$(printf '%s'   "$scan_json" | jq -r '.scan_overview[]?.summary.total // 0')"
+            fixable="$(printf '%s' "$scan_json" | jq -r '.scan_overview[]?.summary.fixable // 0')"
+            counts="$(printf '%s'  "$scan_json" | jq -r '
+              (.scan_overview[]?.summary.summary // {}) as $s
+              | "Critical \($s.Critical // 0) · High \($s.High // 0) · Medium \($s.Medium // 0) · Low \($s.Low // 0)"')"
+
+            echo "$harbor_repository: severity=$severity total=$total fixable=$fixable — $counts"
+
+            if scan_blocks_promotion "$severity" "$scan_json"; then
+              record_failure "$harbor_repository" \
+                "취약점 정책 차단 (deployment_security=$BLOCK_SEVERITY_AT)" \
+                "최고 심각도 $severity · $counts · 총 $total건 중 $fixable건 수정 가능"
+              return 1
+            fi
+
+            harbor_image="$HARBOR_REGISTRY/$HARBOR_PROJECT/$harbor_repository:${GITHUB_SHA}"
+            ecr_image="$ECR_REGISTRY/$ecr_repository:${GITHUB_SHA}"
+
+            # Harbor enforces its own policy at pull time. If the check above
+            # ever drifts from terraform, this is what still stops us.
+            if ! docker pull "$harbor_image"; then
+              record_failure "$harbor_repository" "Harbor 가 pull 을 거부" \
+                "CI 판정은 통과했으나 Harbor 정책이 막았다 — BLOCK_SEVERITY_AT 가 terraform 과 어긋났는지 본다"
+              return 1
+            fi
+
             docker tag "$harbor_image" "$ecr_image"
             docker push "$ecr_image"
           }
+
           promote app-audio-api app-audio-api
           promote web app-audio-web
           promote worker app-audio-worker
 
-      - name: Notify Slack on Trivy Failure
+      - name: Notify Slack when promotion is blocked
         if: failure() && steps.ecr-promotion.outcome == 'failure'
-        uses: slackapi/slack-github-action@v1.24.0
-        with:
-          payload: |
-            {
-              "channel": "#trivy-alerts",
-              "text": "🚨 *Trivy Scan Failed or Timed Out!*\n*Repository:* ${{ github.repository }}\n*Commit:* ${{ github.sha }}\n*Action:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Pipeline>"
-            }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          FAIL_REPOSITORY: ${{ steps.ecr-promotion.outputs.fail_repository }}
+          FAIL_REASON: ${{ steps.ecr-promotion.outputs.fail_reason }}
+          FAIL_DETAIL: ${{ steps.ecr-promotion.outputs.fail_detail }}
+        run: |
+          set -euo pipefail
+
+          # An Incoming Webhook is bound to one channel at creation time, so a
+          # "channel" key in the payload is silently ignored. Posting with curl
+          # keeps the contract visible instead of hiding it behind an action
+          # whose webhook mode needs an undocumented SLACK_WEBHOOK_TYPE.
+          text="$(printf '🚨 *이미지 승격 차단* — `%s`\n*사유:* %s\n*상세:* %s\n*커밋:* `%s`\n*실행 로그:* <%s/%s/actions/runs/%s|열기>' \
+            "${FAIL_REPOSITORY:-알 수 없음}" \
+            "${FAIL_REASON:-승격 스텝 실패}" \
+            "${FAIL_DETAIL:-상세 없음 — 스캔 판정 전에 죽었을 수 있다}" \
+            "${GITHUB_SHA:0:12}" \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+
+          jq -nc --arg text "$text" '{text: $text}' \
+            | curl -sS --fail-with-body -X POST \
+                -H 'Content-Type: application/json' \
+                --data @- "$SLACK_WEBHOOK_URL"
+          echo
 
       - name: Check out GitOps manifests
         uses: actions/checkout@v4

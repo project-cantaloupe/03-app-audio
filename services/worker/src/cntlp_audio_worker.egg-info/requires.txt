@@ -1,0 +1,6 @@
+boto3<2,>=1.35
+prometheus-client<1,>=0.21
+
+[dev]
+pytest<9,>=8
+ruff<1,>=0.9

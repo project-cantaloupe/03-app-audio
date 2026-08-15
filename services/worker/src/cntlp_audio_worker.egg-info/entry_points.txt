@@ -1,0 +1,2 @@
+[console_scripts]
+audio-worker = audio_worker.main:main

@@ -41,7 +41,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # Matches the runtime in services/worker/Dockerfile. Testing on an
+          # older interpreter than the one that ships means the tests cannot
+          # see a regression the deployed image would hit.
+          python-version: "3.13"
 
       - name: Test and lint worker
         working-directory: services/worker

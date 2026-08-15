@@ -1,4 +1,8 @@
-FROM golang:1.24-bookworm AS build
+# The toolchain version here is a security control, not a preference. Trivy
+# reads the Go version stamped into the binary and reports stdlib CVEs against
+# it -- 19 of them at 1.24. go.mod only declares the *minimum* language version
+# the dependencies need; this line decides what actually ships.
+FROM golang:1.26-bookworm AS build
 
 WORKDIR /src
 

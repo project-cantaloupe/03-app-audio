@@ -66,19 +66,43 @@ jobs:
         # The repository is IMMUTABLE on purpose, so a re-push fails partway
         # through with a layer-upload error. Checking first turns that into a
         # clear message, and makes a second click of "Run workflow" harmless.
+        #
+        # The three outcomes are kept apart on purpose. `2>/dev/null` alone
+        # would collapse "the tag is free" and "this role cannot read the
+        # repository" into the same green step, and the run would then fail
+        # much later inside the copy with a 403 that reads like a broken role.
+        # That is exactly how the first attempt at this workflow failed.
         env:
           REPOSITORY: ${{ inputs.target_repository }}
           TAG: ${{ inputs.target_tag }}
         run: |
-          if aws ecr describe-images \
-               --repository-name "$REPOSITORY" \
-               --image-ids "imageTag=$TAG" \
-               --region "$AWS_REGION" >/dev/null 2>&1; then
+          set +e
+          err=$(aws ecr describe-images \
+                  --repository-name "$REPOSITORY" \
+                  --image-ids "imageTag=$TAG" \
+                  --region "$AWS_REGION" 2>&1 >/dev/null)
+          rc=$?
+          set -e
+
+          if [ "$rc" -eq 0 ]; then
             echo "$REPOSITORY:$TAG already exists. The repository is IMMUTABLE;"
             echo "publish a new tag (for example ${TAG}-$(date +%Y%m%d)) instead of overwriting."
             exit 1
           fi
-          echo "Tag is free."
+
+          case "$err" in
+            *ImageNotFoundException*)
+              # The only outcome that means "go ahead". A missing repository is
+              # not one: it means terraform has not been applied yet, and
+              # treating it as a free tag would push into nothing.
+              echo "Tag is free."
+              ;;
+            *)
+              echo "Could not determine whether $REPOSITORY:$TAG exists:"
+              echo "$err"
+              exit 1
+              ;;
+          esac
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3

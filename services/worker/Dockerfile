@@ -42,7 +42,31 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 
-RUN pip install --no-cache-dir .
+# 설치가 끝나면 pip 을 걷어낸다. Alpine 전환 뒤 게이트에 마지막까지 남았던 3건이
+# 전부 pip 안에서 나왔다(`b994a23` 실측, Trivy v0.72.0).
+#
+#   setuptools 70.3.0 — CVE-2025-47273(High) · CVE-2026-59890(Medium)
+#   msgpack    1.1.2  — GHSA-6v7p-g79w-8964(High)
+#
+# 둘 다 우리가 설치한 것이 아니다. 같은 빌드의 pip 출력이 실제로 넣은 것은
+# boto3 · botocore · jmespath · prometheus-client · python-dateutil ·
+# s3transfer · six · urllib3 뿐이고 여기에 setuptools 도 msgpack 도 없다.
+# 정체는 pip 이 자기 안에 들고 다니는 벤더 사본(pip/_vendor/)이다 — Trivy 가
+# 그 vendor 목록을 독립된 패키지로 읽어 보고한다. 그래서 "설치한 적 없는
+# 패키지"가 리포트에 뜨고, 애플리케이션 의존성을 아무리 손봐도 사라지지 않는다.
+#
+# 버전을 올리는 대신 제거하는 이유: pip 은 빌드 시점 도구이고 audio-worker 는
+# 런타임에 임포트하지 않는다(콘솔 스크립트는 pip 이 생성한 평범한 import 문이라
+# pkg_resources 를 타지 않는다). 남겨두면 pip 이 벤더를 갱신할 때까지 우리가
+# 할 수 있는 일이 없고, 무엇보다 컨테이너 안에서 임의 패키지를 설치할 수 있는
+# 능력이 그대로 남는다. 제거는 스캐너 회피가 아니라 그 능력을 없애는 것이다.
+#
+# setuptools 는 이 이미지에 독립 설치본이 없어(공식 python 이미지는
+# --with-ensurepip 만 쓴다) 아래 첫 줄은 보통 no-op 이다. 파이썬 이미지가
+# 언젠가 다시 번들하기 시작해도 조용히 통과하도록 남겨둔다.
+RUN pip install --no-cache-dir . \
+    && pip uninstall --yes setuptools \
+    && pip uninstall --yes pip
 
 USER 10001:10001
 

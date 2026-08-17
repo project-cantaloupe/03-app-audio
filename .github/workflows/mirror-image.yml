@@ -1,0 +1,132 @@
+name: Mirror upstream image to ECR
+
+# This repository is an odd home for a job that mirrors an image the repository
+# does not build. It lives here because the AWS OIDC trust policy pins the
+# subject to this repository and the main branch:
+#
+#   repo:project-cantaloupe@.../03-app-audio@...:ref:refs/heads/main
+#
+# Any other repository, or this repository on any other branch, cannot assume
+# the ECR publishing role. Moving the job means changing the trust policy.
+#   -> 01-infra-provisioning/terraform/aws/audio/ecr.tf
+#
+# Consumers of what this pushes live in 02-k8s-manifests
+# (apps/audio/loadtest/*), not here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_image:
+        description: Fully qualified upstream image, including tag
+        required: true
+        default: docker.io/library/python:3.12-alpine
+      target_repository:
+        description: ECR repository name (must already exist in terraform)
+        required: true
+        default: mirror-python
+      target_tag:
+        description: Tag to publish. The repository is IMMUTABLE, so an existing tag will not be overwritten.
+        required: true
+        default: 3.12-alpine
+
+env:
+  AWS_REGION: ap-northeast-2
+
+concurrency:
+  group: mirror-${{ inputs.target_repository }}-${{ inputs.target_tag }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Copy ${{ inputs.source_image }} into ECR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Refuse to run off the main branch
+        # configure-aws-credentials would fail anyway, but it fails with an STS
+        # error that reads like a broken role rather than a wrong branch.
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "The ECR role trusts refs/heads/main only. Re-run this workflow with main selected."
+          exit 1
+
+      - name: Configure AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Stop if the tag already exists
+        # The repository is IMMUTABLE on purpose, so a re-push fails partway
+        # through with a layer-upload error. Checking first turns that into a
+        # clear message, and makes a second click of "Run workflow" harmless.
+        env:
+          REPOSITORY: ${{ inputs.target_repository }}
+          TAG: ${{ inputs.target_tag }}
+        run: |
+          if aws ecr describe-images \
+               --repository-name "$REPOSITORY" \
+               --image-ids "imageTag=$TAG" \
+               --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "$REPOSITORY:$TAG already exists. The repository is IMMUTABLE;"
+            echo "publish a new tag (for example ${TAG}-$(date +%Y%m%d)) instead of overwriting."
+            exit 1
+          fi
+          echo "Tag is free."
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Copy the image
+        # `buildx imagetools create` copies the manifest rather than pulling the
+        # image into a local daemon and re-pushing it. Two things follow:
+        #   - every architecture in the source manifest list survives. A
+        #     `docker pull && docker push` would silently narrow the image to
+        #     the runner's own architecture, and the loss would only show up on
+        #     a node of a different one.
+        #   - the digest is preserved, so the mirror is verifiably the same
+        #     bytes as upstream rather than a rebuild that merely looks alike.
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          SOURCE: ${{ inputs.source_image }}
+          REPOSITORY: ${{ inputs.target_repository }}
+          TAG: ${{ inputs.target_tag }}
+        run: |
+          set -euo pipefail
+          target="$REGISTRY/$REPOSITORY:$TAG"
+          echo "::group::Source manifest"
+          docker buildx imagetools inspect "$SOURCE"
+          echo "::endgroup::"
+          docker buildx imagetools create --tag "$target" "$SOURCE"
+          echo "Pushed $target"
+
+      - name: Report the mirrored digest
+        # This digest is what the manifests should be pinned to if the tag ever
+        # needs to be verified against upstream.
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          REPOSITORY: ${{ inputs.target_repository }}
+          TAG: ${{ inputs.target_tag }}
+        run: |
+          set -euo pipefail
+          digest=$(aws ecr describe-images \
+            --repository-name "$REPOSITORY" \
+            --image-ids "imageTag=$TAG" \
+            --region "$AWS_REGION" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          {
+            echo "### Mirrored image"
+            echo
+            echo '```'
+            echo "$REGISTRY/$REPOSITORY:$TAG"
+            echo "$digest"
+            echo '```'
+            echo
+            echo "ECR scan-on-push is enabled; findings appear under the repository in the console."
+          } >> "$GITHUB_STEP_SUMMARY"
